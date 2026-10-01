@@ -9,7 +9,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-        import { initializeFirestore, getDocFromServer, doc, getDoc, setDoc, onSnapshot, runTransaction, collection, getDocs, writeBatch, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+        import { initializeFirestore, getDocFromServer, doc, getDoc, setDoc as _setDoc, onSnapshot, runTransaction as _runTransaction, collection, getDocs, writeBatch, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
         import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updatePassword, signOut, setPersistence, browserLocalPersistence, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
         const firebaseConfig = {
@@ -27,6 +27,14 @@
            canal de streaming por defecto de Firestore puede quedar "colgado" sin dar error, y
            entonces onSnapshot deja de avisar de cambios hasta recargar la página (F5). */
         const db = initializeFirestore(app, { experimentalAutoDetectLongPolling: true });
+
+        /* Escrituras en curso: si el usuario cierra la pestaña mientras se está guardando,
+           el navegador avisa antes de cerrar (así no se pierde el último cambio). */
+        let _pendingWrites = 0;
+        const _track = async (p) => { _pendingWrites++; try { return await p; } finally { _pendingWrites--; } };
+        const setDoc = (...a) => _track(_setDoc(...a));
+        const runTransaction = (...a) => _track(_runTransaction(...a));
+        window.addEventListener('beforeunload', (e) => { if (_pendingWrites > 0) { e.preventDefault(); e.returnValue = ''; } });
         const auth = getAuth(app);
         setPersistence(auth, browserLocalPersistence).catch(() => {});
 
@@ -540,25 +548,25 @@
              - Si está en ambos y es igual a "base" → se coge la versión del servidor
                (puede tener ediciones remotas más recientes); si difiere de "base" →
                gana la versión local (edición propia). */
-        function mergeTransportArrays(baseRows, oursRows, theirsRows) {
-            const byId = (arr) => {
+        function mergeByKey(keyOf, baseRows, oursRows, theirsRows) {
+            const byKey = (arr) => {
                 const m = new Map();
-                (arr || []).forEach(e => { if (e && e.id != null) m.set(String(e.id), e); });
+                (arr || []).forEach(e => { const k = keyOf(e); if (k != null) m.set(k, e); });
                 return m;
             };
-            const baseMap   = byId(baseRows);
-            const oursMap   = byId(oursRows);
-            const theirsMap = byId(theirsRows);
+            const baseMap   = byKey(baseRows);
+            const oursMap   = byKey(oursRows);
+            const theirsMap = byKey(theirsRows);
 
             const orderedIds = [];
             const seen = new Set();
-            (oursRows || []).forEach(e => {
-                if (e && e.id != null) { const id = String(e.id); if (!seen.has(id)) { seen.add(id); orderedIds.push(id); } }
+            const addIds = (arr) => (arr || []).forEach(e => {
+                const k = keyOf(e);
+                if (k != null && !seen.has(k)) { seen.add(k); orderedIds.push(k); }
             });
-            (theirsRows || []).forEach(e => {
-                if (e && e.id != null) { const id = String(e.id); if (!seen.has(id)) { seen.add(id); orderedIds.push(id); } }
-            });
-            baseMap.forEach((_, id) => { if (!seen.has(id)) { seen.add(id); orderedIds.push(id); } });
+            addIds(oursRows);
+            addIds(theirsRows);
+            baseMap.forEach((_, k) => { if (!seen.has(k)) { seen.add(k); orderedIds.push(k); } });
 
             const merged = [];
             orderedIds.forEach(id => {
@@ -578,6 +586,10 @@
                 merged.push(sinCambiosLocales ? theirsMap.get(id) : oursEntry);
             });
             return merged;
+        }
+        const idKey = (e) => (e && e.id != null) ? String(e.id) : null;
+        function mergeTransportArrays(baseRows, oursRows, theirsRows) {
+            return mergeByKey(idKey, baseRows, oursRows, theirsRows);
         }
 
         window._fbMergeTransporte = async (localRows, baseRows) => {
@@ -625,6 +637,62 @@
            usuario (o el propio borrado automático al pasar un RMA a Pretest) se
            refleja al instante en todos los paneles abiertos, sin recargar. */
         window._fbListenTransporte = rowsListen('transporte', 'transporte');
+
+        /* ── Guardado transaccional con merge de 3 vías (incidencias, historial de incidencias, roles) ──
+           Mismo patrón que transporte y seguimiento RMA: se lee lo que hay AHORA en el servidor dentro
+           de la transacción y se combina con el cambio local, sin pisar lo de otros usuarios. */
+        const rowsMerge = (col, label, mergeFn) => async (localRows, baseRows) => {
+            try {
+                let out = null;
+                const aad = col + '/entries';
+                await runTransaction(db, async (tx) => {
+                    const ref = doc(db, col, 'entries');
+                    const snap = await tx.get(ref);
+                    const theirs = snap.exists() ? (((await decodeDoc(snap.data(), aad)) || {}).rows || []) : [];
+                    const merged = mergeFn(baseRows, localRows, theirs);
+                    tx.set(ref, await encodeDoc({ rows: merged }, aad));
+                    out = merged;
+                });
+                window._fbLoadOk[col] = true;
+                return out;
+            } catch (e) {
+                console.error(`Firebase merge ${label} error:`, e);
+                return null;
+            }
+        };
+
+        /* Incidencias: además del merge por id, se combinan campo a campo (rma, descripción, pin…)
+           y las actualizaciones internas (updates) por id, para que dos personas que añadan
+           actualizaciones a la misma incidencia no se las pisen. */
+        function mergeIncidencias(baseRows, oursRows, theirsRows) {
+            const merged = mergeByKey(idKey, baseRows, oursRows, theirsRows);
+            const map = (arr) => { const m = new Map(); (arr || []).forEach(e => { const k = idKey(e); if (k != null) m.set(k, e); }); return m; };
+            const bm = map(baseRows), om = map(oursRows), tm = map(theirsRows);
+            return merged.map(e => {
+                const k = idKey(e);
+                const b = bm.get(k), o = om.get(k), t = tm.get(k);
+                if (!o || !t) return e;
+                const out = {};
+                const keys = new Set([...Object.keys(t), ...Object.keys(o)]);
+                keys.forEach(f => {
+                    if (f === 'updates') return;
+                    const igualABase = b && JSON.stringify(o[f]) === JSON.stringify(b[f]);
+                    out[f] = igualABase ? t[f] : o[f];
+                });
+                out.updates = mergeByKey(idKey, b && b.updates, o.updates, t.updates);
+                return out;
+            });
+        }
+        const emailKey = (e) => (e && e.email) ? String(e.email).toLowerCase() : null;
+
+        window._fbListenIncidencias = rowsListen('incidencias', 'incidencias');
+        window._fbGetIncidenciasFresh = rowsGetFresh('incidencias');
+        window._fbMergeIncidencias = rowsMerge('incidencias', 'incidencias', mergeIncidencias);
+        window._fbGetIncidenciasHistorialFresh = rowsGetFresh('incidencias_historial');
+        window._fbMergeIncidenciasHistorial = rowsMerge('incidencias_historial', 'incidencias_historial',
+            (b, o, t) => mergeByKey(idKey, b, o, t));
+        window._fbMergeUserRoles = rowsMerge('user_roles', 'user_roles',
+            (b, o, t) => mergeByKey(emailKey, b, o, t));
 
         /* ── INCIDENCIAS Firebase ── */
         window._fbGetIncidencias = rowsGet('incidencias', 'incidencias');
@@ -685,11 +753,43 @@
             }
         };
 
+        /* Antes este guardado se tragaba el error (la pantalla decía "guardado" aunque no lo estuviera).
+           Ahora el error se propaga y el usuario lo ve. */
         window._fbSetRmaContabilidad = async (precios) => {
             try {
                 await setDoc(doc(db, 'rma_contabilidad', 'entries'), await encodeDoc(precios, 'rma_contabilidad/entries'));
             } catch (e) {
                 console.error('Firebase set rma_contabilidad error:', e);
+                alert('No se pudo guardar la contabilidad RMA. Revisa la conexión y vuelve a intentarlo. El cambio NO se ha guardado.');
+                throw e;
+            }
+        };
+
+        /* Lee-modifica-escribe en una transacción: se aplica solo el cambio pedido sobre lo que hay
+           AHORA en el servidor, así no se pisan los cambios de otros usuarios. */
+        window._fbMutateRmaContabilidad = async (fn) => {
+            const aad = 'rma_contabilidad/entries';
+            try {
+                let out = null;
+                await runTransaction(db, async (tx) => {
+                    const ref = doc(db, 'rma_contabilidad', 'entries');
+                    const snap = await tx.get(ref);
+                    const cur = snap.exists() ? ((await decodeDoc(snap.data(), aad)) || {}) : {};
+                    const state = {
+                        precioGarantia: (typeof cur.precioGarantia === 'number') ? cur.precioGarantia : null,
+                        precioFueraGarantia: (typeof cur.precioFueraGarantia === 'number') ? cur.precioFueraGarantia : null,
+                        historico: Array.isArray(cur.historico) ? cur.historico : [],
+                        beneficioClearedAt: (typeof cur.beneficioClearedAt === 'string') ? cur.beneficioClearedAt : null
+                    };
+                    const next = fn(state) || state;
+                    tx.set(ref, await encodeDoc(next, aad));
+                    out = next;
+                });
+                return out;
+            } catch (e) {
+                console.error('Firebase mutate rma_contabilidad error:', e);
+                alert('No se pudo guardar la contabilidad RMA. Revisa la conexión y vuelve a intentarlo. El cambio NO se ha guardado.');
+                throw e;
             }
         };
 
@@ -716,6 +816,30 @@
             } catch (e) {
                 console.error('Firebase set inventario error:', e);
                 return false;
+            }
+        };
+
+        /* Lee-modifica-escribe en una transacción (antes se leía y se escribía por separado:
+           si otro usuario guardaba entre medias, se perdía su cambio). fn recibe un Map pn→pieza. */
+        window._fbMutateInventario = async (fn) => {
+            const aad = 'inventario/entries';
+            try {
+                let out = null;
+                await runTransaction(db, async (tx) => {
+                    const ref = doc(db, 'inventario', 'entries');
+                    const snap = await tx.get(ref);
+                    const base = snap.exists() ? (((await decodeDoc(snap.data(), aad)) || {}).rows || []) : [];
+                    const map = new Map();
+                    base.forEach(r => { const pn = String((r && r.pn) ?? '').trim(); if (pn) map.set(pn, { pn, location: String(r.location || '') }); });
+                    fn(map);
+                    const rows = [...map.values()].sort((a, b) => a.pn < b.pn ? -1 : a.pn > b.pn ? 1 : 0);
+                    tx.set(ref, await encodeDoc({ rows }, aad));
+                    out = rows;
+                });
+                return out;
+            } catch (e) {
+                console.error('Firebase mutate inventario error:', e);
+                return null;
             }
         };
 
@@ -3172,14 +3296,104 @@ document.addEventListener('DOMContentLoaded', () => {
         return entry;
     }
 
+    /* Última versión conocida de Firestore (base del merge de 3 vías, ya migrada) */
+    let lastSyncedIncRows = [];
+    let lastIncRawJson = '';      // última versión (cruda) aplicada en pantalla: evita repintar si no ha cambiado nada
+    let incSyncVer = 0;           // sube con cada guardado/aplicación: descarta lecturas que llegan tarde
+
+    /* Si un guardado falla, se vuelve a la última versión confirmada en el servidor
+       (así la pantalla nunca muestra un cambio que en realidad no se guardó) */
+    function revertIncidencias() {
+        incidencias = JSON.parse(JSON.stringify(lastSyncedIncRows));
+        incEditingId = null;
+        incEditingUpdate = null;
+        renderIncidencias();
+    }
+
     async function saveIncidencias() {
-        if (window._fbSetIncidencias) await window._fbSetIncidencias(incidencias);
+        if (!window._fbMergeIncidencias) return;
+        incSyncVer++;
+        try {
+            const merged = await window._fbMergeIncidencias(incidencias, lastSyncedIncRows);
+            if (!merged) {
+                revertIncidencias();
+                alert('No se pudo guardar la incidencia. Revisa la conexión y vuelve a intentarlo. El cambio NO se ha guardado.');
+                throw new Error('merge-failed');
+            }
+            incidencias = merged.map(e => migrateIncidencia(e));
+            lastSyncedIncRows = JSON.parse(JSON.stringify(incidencias));
+            lastIncRawJson = JSON.stringify(merged);
+        } finally { incSyncVer++; }
+    }
+
+    /* Repinta conservando lo que el usuario esté escribiendo en la lista (así un cambio
+       remoto no le borra un texto a medias) */
+    function renderIncidenciasKeepingDrafts() {
+        const list = document.getElementById('inc-list');
+        const drafts = {};
+        list.querySelectorAll('input[id], textarea[id]').forEach(el => { drafts[el.id] = el.value; });
+        const ae = document.activeElement;
+        let focusId = null, selS = 0, selE = 0;
+        if (ae && ae.id && list.contains(ae)) {
+            focusId = ae.id;
+            try { selS = ae.selectionStart; selE = ae.selectionEnd; } catch (e) {}
+        }
+        renderIncidencias();
+        Object.keys(drafts).forEach(id => {
+            const el = document.getElementById(id);
+            if (el && el.value !== drafts[id]) el.value = drafts[id];
+        });
+        if (focusId) {
+            const el = document.getElementById(focusId);
+            if (el) { el.focus(); try { el.setSelectionRange(selS, selE); } catch (e) {} }
+        }
+    }
+
+    function applyIncidenciasRows(rows) {
+        const json = JSON.stringify(rows);
+        if (json === lastIncRawJson) return;      // nada nuevo
+        incSyncVer++;
+        lastIncRawJson = json;
+        incidencias = rows.map(e => migrateIncidencia(e));
+        lastSyncedIncRows = JSON.parse(JSON.stringify(incidencias));
+        renderIncidenciasKeepingDrafts();
     }
 
     async function loadIncidencias() {
-        const raw = window._fbGetIncidencias ? await window._fbGetIncidencias() : [];
-        incidencias = raw.map(e => migrateIncidencia(e));
-        renderIncidencias();
+        const rows = window._fbGetIncidenciasFresh ? await window._fbGetIncidenciasFresh()
+                   : (window._fbGetIncidencias ? await window._fbGetIncidencias() : []);
+        /* null = no se pudo leer: se mantiene lo que hay en pantalla */
+        if (rows !== null) applyIncidenciasRows(rows);
+    }
+
+    /* Red de seguridad por si el listener se queda colgado: relectura puntual y solo repinta si algo cambió */
+    async function resyncIncidencias() {
+        if (!window._fbGetIncidenciasFresh) return;
+        if (!(window._fbCryptoReady && window._fbCryptoReady())) return;
+        const ver = incSyncVer;
+        const rows = await window._fbGetIncidenciasFresh();
+        if (rows && ver === incSyncVer) applyIncidenciasRows(rows);
+    }
+
+    /* Sincronización en tiempo real: una lectura solo cuando alguien cambia algo */
+    let incRealtimeUnsub = null;
+    let incListenerRetry = null;
+    function stopIncidenciasListener() {
+        clearTimeout(incListenerRetry); incListenerRetry = null;
+        if (incRealtimeUnsub) { try { incRealtimeUnsub(); } catch (e) {} incRealtimeUnsub = null; }
+    }
+    function startIncidenciasRealtimeSync() {
+        stopIncidenciasListener();
+        if (!window._fbListenIncidencias) { loadIncidencias(); return; }
+        incRealtimeUnsub = window._fbListenIncidencias(applyIncidenciasRows, () => {
+            if (incRealtimeUnsub) { try { incRealtimeUnsub(); } catch (e) {} incRealtimeUnsub = null; }
+            loadIncidencias();
+            clearTimeout(incListenerRetry);
+            incListenerRetry = setTimeout(() => {
+                incListenerRetry = null;
+                if (window._fbCryptoReady && window._fbCryptoReady()) startIncidenciasRealtimeSync();
+            }, 10000);
+        });
     }
 
     function updateIncidenciasBadge() {
@@ -3357,8 +3571,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const [removed] = incidencias.splice(idx, 1);
         if (incExpandedId === id) incExpandedId = null;
         incidenciasHistorial.unshift({ ...removed, deletedAt: nowStr() });
-        await saveIncidencias();
-        await saveIncidenciasHistorial();
+        try {
+            /* Primero el historial: si algo falla, la incidencia nunca se pierde */
+            await saveIncidenciasHistorial();
+            await saveIncidencias();
+        } catch (e) { revertIncidencias(); return; }
         renderIncidencias();
         showNotification('Incidencia eliminada y guardada en el historial');
     };
@@ -3367,13 +3584,28 @@ document.addEventListener('DOMContentLoaded', () => {
        HISTORIAL DE INCIDENCIAS
     ════════════════════════════════════════ */
 
+    let lastSyncedIncHistRows = [];
+
     async function saveIncidenciasHistorial() {
-        if (window._fbSetIncidenciasHistorial) await window._fbSetIncidenciasHistorial(incidenciasHistorial);
+        if (!window._fbMergeIncidenciasHistorial) return;
+        const merged = await window._fbMergeIncidenciasHistorial(incidenciasHistorial, lastSyncedIncHistRows);
+        if (!merged) {
+            incidenciasHistorial = JSON.parse(JSON.stringify(lastSyncedIncHistRows));
+            alert('No se pudo guardar el historial de incidencias. Revisa la conexión y vuelve a intentarlo. El cambio NO se ha guardado.');
+            throw new Error('merge-failed');
+        }
+        incidenciasHistorial = merged;
+        lastSyncedIncHistRows = JSON.parse(JSON.stringify(merged));
     }
 
+    /* Devuelve true si se pudo leer del servidor */
     async function loadIncidenciasHistorial() {
-        const raw = window._fbGetIncidenciasHistorial ? await window._fbGetIncidenciasHistorial() : [];
+        const raw = window._fbGetIncidenciasHistorialFresh ? await window._fbGetIncidenciasHistorialFresh()
+                  : (window._fbGetIncidenciasHistorial ? await window._fbGetIncidenciasHistorial() : []);
+        if (raw === null) return false;
         incidenciasHistorial = raw;
+        lastSyncedIncHistRows = JSON.parse(JSON.stringify(raw));
+        return true;
     }
 
     function renderIncidenciasHistorial() {
@@ -3442,13 +3674,13 @@ document.addEventListener('DOMContentLoaded', () => {
     window.incHistoryDelete = async function(id) {
         if (!confirm('¿Eliminar definitivamente esta incidencia del historial? Esta acción no se puede deshacer.')) return;
         incidenciasHistorial = incidenciasHistorial.filter(e => e.id !== id);
-        await saveIncidenciasHistorial();
+        try { await saveIncidenciasHistorial(); } catch (e) { renderIncidenciasHistorial(); return; }
         renderIncidenciasHistorial();
         showNotification('Eliminada del historial');
     };
 
     async function openIncHistorialModal() {
-        await loadIncidenciasHistorial();
+        if (!(await loadIncidenciasHistorial())) showNotification('No se pudo actualizar el historial desde el servidor. Se muestra la última versión conocida.');
         incHistSearchInput.value = '';
         renderIncidenciasHistorial();
         incHistModalOverlay.classList.add('show');
@@ -3468,9 +3700,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const idx = incFindIndex(id);
         if (idx === -1) return;
         incidencias[idx].pinned = !incidencias[idx].pinned;
+        const nowPinned = incidencias[idx].pinned;   // tras guardar el array se reemplaza: no usar idx después
         await saveIncidencias();
         renderIncidencias();
-        showNotification(incidencias[idx].pinned ? 'Marcada como importante' : 'Desmarcada como importante');
+        showNotification(nowPinned ? 'Marcada como importante' : 'Desmarcada como importante');
     };
 
     window.incAddUpdate = async function(id) {
@@ -4383,6 +4616,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function resyncRmaTracking() {
         flushRmaHistorial();
+        resyncIncidencias();
         if (rmaResyncBusy || !window._fbGetRmaTrackingFresh) return;
         if (!(window._fbCryptoReady && window._fbCryptoReady())) return;
         rmaResyncBusy = true;
@@ -4421,8 +4655,8 @@ document.addEventListener('DOMContentLoaded', () => {
          (focus y visibilitychange saltan a la vez y se agrupan);
        - el sondeo periódico es cada 10 min y solo si el listener NO está sano o la pestaña
          lleva mucho tiempo sin sincronizar. */
-    const RMA_RESYNC_MIN_GAP_MS = 60 * 1000;
-    const RMA_POLL_EVERY_MS     = 10 * 60 * 1000;
+    const RMA_RESYNC_MIN_GAP_MS = 5 * 60 * 1000;
+    const RMA_POLL_EVERY_MS     = 15 * 60 * 1000;
     let rmaLastResyncAt = 0;
     function resyncRmaThrottled() {
         const now = Date.now();
@@ -5859,15 +6093,26 @@ document.addEventListener('DOMContentLoaded', () => {
     /* ── Contabilidad RMA (precio de reparación en/fuera de garantía) ── */
     let rmaContabilidad = { precioGarantia: null, precioFueraGarantia: null, historico: [], beneficioClearedAt: null };
 
+    function applyRmaContabilidad(data) {
+        if (!data) return;
+        rmaContabilidad.precioGarantia = (typeof data.precioGarantia === 'number') ? data.precioGarantia : null;
+        rmaContabilidad.precioFueraGarantia = (typeof data.precioFueraGarantia === 'number') ? data.precioFueraGarantia : null;
+        rmaContabilidad.historico = Array.isArray(data.historico) ? data.historico : [];
+        rmaContabilidad.beneficioClearedAt = (typeof data.beneficioClearedAt === 'string') ? data.beneficioClearedAt : null;
+    }
+
     async function loadRmaContabilidad() {
         const data = window._fbGetRmaContabilidad ? await window._fbGetRmaContabilidad() : null;
-        if (data) {
-            rmaContabilidad.precioGarantia = (typeof data.precioGarantia === 'number') ? data.precioGarantia : null;
-            rmaContabilidad.precioFueraGarantia = (typeof data.precioFueraGarantia === 'number') ? data.precioFueraGarantia : null;
-            rmaContabilidad.historico = Array.isArray(data.historico) ? data.historico : [];
-            rmaContabilidad.beneficioClearedAt = (typeof data.beneficioClearedAt === 'string') ? data.beneficioClearedAt : null;
-        }
+        applyRmaContabilidad(data);
         renderDashBeneficioChart();
+    }
+
+    /* Aplica un cambio SOLO sobre lo que hay ahora en el servidor (transacción) y refleja el resultado.
+       Si falla, lanza error y la pantalla no se toca (no se muestra "guardado" en falso). */
+    async function mutateRmaContabilidad(fn) {
+        if (!window._fbMutateRmaContabilidad) throw new Error('sin-conexion');
+        const next = await window._fbMutateRmaContabilidad(fn);
+        applyRmaContabilidad(next);
     }
 
     function fillRmaAccountingForm() {
@@ -6021,16 +6266,18 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (!rmaContabilidad.historico) rmaContabilidad.historico = [];
-        const existente = rmaContabilidad.historico.find(h => h.mes === mes && h.anio === anio);
-        if (existente) {
-            existente.unidades = unidades;
-            existente.precioTotal = precioTotal;
-        } else {
-            rmaContabilidad.historico.push({ id: genId('rmahist-mes'), mes, anio, unidades, precioTotal });
-        }
-
-        if (window._fbSetRmaContabilidad) await window._fbSetRmaContabilidad(rmaContabilidad);
+        const nuevoId = genId('rmahist-mes');
+        await mutateRmaContabilidad(c => {
+            if (!Array.isArray(c.historico)) c.historico = [];
+            const existente = c.historico.find(h => h.mes === mes && h.anio === anio);
+            if (existente) {
+                existente.unidades = unidades;
+                existente.precioTotal = precioTotal;
+            } else {
+                c.historico.push({ id: nuevoId, mes, anio, unidades, precioTotal });
+            }
+            return c;
+        });
         rmaAccountingHistUnidades.value = '';
         rmaAccountingHistPrecioTotal.value = '';
         renderRmaAccountingHistorico();
@@ -6040,8 +6287,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.rmaAccountingHistRemove = async function(id) {
         if (!confirm('¿Eliminar este mes de la lista?')) return;
-        rmaContabilidad.historico = (rmaContabilidad.historico || []).filter(h => h.id !== id);
-        if (window._fbSetRmaContabilidad) await window._fbSetRmaContabilidad(rmaContabilidad);
+        await mutateRmaContabilidad(c => { c.historico = (c.historico || []).filter(h => h.id !== id); return c; });
         renderRmaAccountingHistorico();
         renderDashBeneficioChart();
     };
@@ -6072,8 +6318,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function saveRmaAccounting() {
         const precioGarantia = rmaAccountingPriceGInput.value === '' ? null : Math.max(0, parseFloat(rmaAccountingPriceGInput.value));
         const precioFueraGarantia = rmaAccountingPriceFInput.value === '' ? null : Math.max(0, parseFloat(rmaAccountingPriceFInput.value));
-        rmaContabilidad = { precioGarantia, precioFueraGarantia, historico: rmaContabilidad.historico || [], beneficioClearedAt: rmaContabilidad.beneficioClearedAt || null };
-        if (window._fbSetRmaContabilidad) await window._fbSetRmaContabilidad(rmaContabilidad);
+        await mutateRmaContabilidad(c => { c.precioGarantia = precioGarantia; c.precioFueraGarantia = precioFueraGarantia; return c; });
         rmaAccountingSavedMsg.classList.add('show');
         setTimeout(() => rmaAccountingSavedMsg.classList.remove('show'), 2000);
         renderRmaAccountingBeneficio();
@@ -6090,8 +6335,8 @@ document.addEventListener('DOMContentLoaded', () => {
        contando aquí automáticamente. */
     async function rmaBeneficioClearAll() {
         if (!confirm('¿Borrar de "Beneficio de RMAs finalizados" todos los RMAs finalizados hasta este momento?\n\nNo se eliminan del historial general de movimientos, pero dejarán de contarse en esta sección. La gráfica y "Meses anteriores" siguen calculándose solas desde octubre y no cambian. Los RMAs que se finalicen a partir de ahora sí se seguirán contando automáticamente.\n\nEsta acción no se puede deshacer.')) return;
-        rmaContabilidad.beneficioClearedAt = new Date().toISOString();
-        if (window._fbSetRmaContabilidad) await window._fbSetRmaContabilidad(rmaContabilidad);
+        const clearedAt = new Date().toISOString();
+        await mutateRmaContabilidad(c => { c.beneficioClearedAt = clearedAt; return c; });
         renderRmaAccountingBeneficio();
         renderRmaAccountingHistorico();
         renderDashBeneficioChart();
@@ -6126,12 +6371,25 @@ document.addEventListener('DOMContentLoaded', () => {
        ROLES DE USUARIO
     ════════════════════════════════════════ */
 
+    let lastSyncedRoles = [];
+
     async function loadUserRoles() {
         userRoles = window._fbGetUserRoles ? await window._fbGetUserRoles() : [];
+        lastSyncedRoles = JSON.parse(JSON.stringify(userRoles));
     }
 
+    /* Guardado transaccional con merge por correo: dos administradores no se pisan la lista */
     async function saveUserRoles() {
-        if (window._fbSetUserRoles) await window._fbSetUserRoles(userRoles);
+        if (!window._fbMergeUserRoles) return;
+        const merged = await window._fbMergeUserRoles(userRoles, lastSyncedRoles);
+        if (!merged) {
+            userRoles = JSON.parse(JSON.stringify(lastSyncedRoles));
+            try { renderSettingsUsers(); } catch (e) {}
+            alert('No se pudo guardar la lista de usuarios. Revisa la conexión y vuelve a intentarlo. El cambio NO se ha guardado.');
+            throw new Error('merge-failed');
+        }
+        userRoles = merged;
+        lastSyncedRoles = JSON.parse(JSON.stringify(merged));
     }
 
     function getRoleForEmail(email) {
@@ -6186,8 +6444,9 @@ document.addEventListener('DOMContentLoaded', () => {
     window.settingsChangeRole = async function(idx, role) {
         if (!userRoles[idx]) return;
         userRoles[idx].role = role;
+        const emailCambiado = userRoles[idx].email;   // tras guardar el array se reemplaza: no usar idx después
         await saveUserRoles();
-        showNotification(`Rol de ${userRoles[idx].email} actualizado a ${role === 'admin' ? 'Administrador' : role === 'total' ? 'Total' : 'Técnico'}`);
+        showNotification(`Rol de ${emailCambiado} actualizado a ${role === 'admin' ? 'Administrador' : role === 'total' ? 'Total' : 'Técnico'}`);
     };
 
     window.settingsTogglePass = function(idx) {
@@ -6821,7 +7080,7 @@ document.addEventListener('DOMContentLoaded', () => {
         startVersionWatch();
         startCryptoWatch();
         startTransporteRealtimeSync();
-        loadIncidencias();
+        startIncidenciasRealtimeSync();
         loadIncidenciasHistorial();   // necesario antes de poder borrar incidencias sin pisar el historial
         startRmaRealtimeSync();
         startRmaHistorialRealtimeSync();
@@ -6836,8 +7095,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (transporteRealtimeUnsub) { try { transporteRealtimeUnsub(); } catch (e) {} transporteRealtimeUnsub = null; }
         stopRmaListener();
         stopRmaHistorialListener();
+        stopIncidenciasListener();
         rmaHistorialPending = [];
         transportEntries = []; lastSyncedTransportRows = []; incidencias = []; incidenciasHistorial = [];
+        lastSyncedIncRows = []; lastIncRawJson = ''; lastSyncedIncHistRows = []; lastSyncedRoles = [];
         rmaTracking = []; lastSyncedRmaRows = []; rmaHistorial = []; userRoles = [];
         rmaContabilidad = { precioGarantia: null, precioFueraGarantia: null, historico: [], beneficioClearedAt: null };
         if (window._fbCryptoLock) window._fbCryptoLock();
@@ -7374,14 +7635,9 @@ document.addEventListener('DOMContentLoaded', () => {
        no pisar cambios de otros usuarios) y guarda la lista completa cifrada. Devuelve true si se guardó. */
     async function mutate(fn) {
         if (!cryptoOk()) { alert('El cifrado está bloqueado: no se puede guardar el inventario.'); return false; }
-        const base = await window._fbGetInventario();
-        if (base === null) { alert('No se pudo leer el inventario cifrado. No se ha guardado nada.'); return false; }
-        const map = new Map();
-        base.forEach(r => { const pn = String((r && r.pn) ?? '').trim(); if (pn) map.set(pn, { pn, location: String(r.location || '') }); });
-        fn(map);
-        const rows = [...map.values()].sort(byPn);
-        const ok = await window._fbSetInventario(rows);
-        if (!ok) { alert('No se pudo guardar el inventario cifrado (revisa las reglas de Firestore de PortatilSat).'); return false; }
+        /* Lectura + cambio + escritura dentro de UNA transacción: no se pisan cambios de otros usuarios */
+        const rows = window._fbMutateInventario ? await window._fbMutateInventario(fn) : null;
+        if (!rows) { alert('No se pudo guardar el inventario cifrado. Revisa la conexión y las reglas de Firestore. No se ha guardado nada.'); return false; }
         applyRows(rows);
         return true;
     }
