@@ -6545,9 +6545,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const live = rmaTracking.find(e => rmaKeyOf(e.rma) === key);
         if (live) {
-            const t = (live.fase === RMA_TICKET_PHASE) ? rmaTicketElapsedMs(live) : rmaCronoElapsedMs(live);
-            const run = (live.cronometro && live.cronometro.running) ? '' : ' (cronómetro en pausa)';
-            html = `<b>RMA ${esc(live.rma)}</b> · Fase: ${esc(live.fase)} · Tiempo actual: <b>${esc(rmaCronoFormat(t))}</b>${(live.fase === RMA_TICKET_PHASE) ? '' : run}${ajTxt}`;
+            if (live.fase === 'En espera') {
+                /* En "En espera" el tiempo que importa es el de espera (mismo cálculo que el listado
+                   de +90 días del dashboard), no el cronómetro normal, que está pausado. */
+                const d0 = parseFechaHora(live.fecha);
+                const tEsp = d0 ? Math.max(0, Date.now() - d0.getTime() + aj) : 0;
+                const tCrono = rmaCronoElapsedMs(live);
+                html = `<b>RMA ${esc(live.rma)}</b> · Fase: ${esc(live.fase)} · Tiempo en espera: <b>${esc(rmaCronoFormat(tEsp))}</b> <span style="color:var(--secondary-color); font-size:0.8rem;">(cronómetro normal en pausa: ${esc(rmaCronoFormat(tCrono))})</span>${ajTxt}`;
+            } else {
+                const t = (live.fase === RMA_TICKET_PHASE) ? rmaTicketElapsedMs(live) : rmaCronoElapsedMs(live);
+                const run = (live.cronometro && live.cronometro.running) ? '' : ' (cronómetro en pausa)';
+                html = `<b>RMA ${esc(live.rma)}</b> · Fase: ${esc(live.fase)} · Tiempo actual: <b>${esc(rmaCronoFormat(t))}</b>${(live.fase === RMA_TICKET_PHASE) ? '' : run}${ajTxt}`;
+            }
         } else {
             const moves = rmaHistorial.filter(h => rmaKeyOf(h.rma) === key);
             if (moves.length) {
