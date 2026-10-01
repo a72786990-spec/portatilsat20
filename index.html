@@ -647,6 +647,32 @@
         /* ── HISTORIAL DE FASES RMA Firebase ── */
         window._fbGetRmaHistorial = rowsGet('rma_historial', 'rma_historial');
         window._fbSetRmaHistorial = rowsSet('rma_historial', 'rma_historial');
+        window._fbGetRmaHistorialFresh = rowsGetFresh('rma_historial');
+        /* Escucha en tiempo real: todos los usuarios ven al instante los RMAs finalizados de los demás */
+        window._fbListenRmaHistorial = rowsListen('rma_historial', 'rma_historial');
+        /* Añade movimientos al historial DENTRO de una transacción: lee lo que hay en el servidor
+           y solo agrega los movimientos nuevos (por id). Así una sesión con datos antiguos ya no
+           puede sobrescribir y perder los "Finalizado" registrados por otra sesión/usuario. */
+        window._fbAppendRmaHistorial = async (newEntries) => {
+            try {
+                let out = null;
+                const aad = 'rma_historial/entries';
+                await runTransaction(db, async (tx) => {
+                    const ref = doc(db, 'rma_historial', 'entries');
+                    const snap = await tx.get(ref);
+                    const theirs = snap.exists() ? (((await decodeDoc(snap.data(), aad)) || {}).rows || []) : [];
+                    const ids = new Set(theirs.map(r => r && r.id));
+                    const merged = theirs.concat((newEntries || []).filter(e => e && !ids.has(e.id)));
+                    tx.set(ref, await encodeDoc({ rows: merged }, aad));
+                    out = merged;
+                });
+                window._fbLoadOk['rma_historial'] = true;
+                return out;
+            } catch (e) {
+                console.error('Firebase append rma_historial error:', e);
+                return null;
+            }
+        };
 
         /* ── CONTABILIDAD RMA Firebase (precios de reparación) ── */
         window._fbGetRmaContabilidad = async () => {
@@ -4356,6 +4382,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function resyncRmaTracking() {
+        flushRmaHistorial();
         if (rmaResyncBusy || !window._fbGetRmaTrackingFresh) return;
         if (!(window._fbCryptoReady && window._fbCryptoReady())) return;
         rmaResyncBusy = true;
@@ -4467,14 +4494,76 @@ document.addEventListener('DOMContentLoaded', () => {
         if (window._fbSetRmaHistorial) await window._fbSetRmaHistorial(rmaHistorial);
     }
 
-    async function loadRmaHistorial() {
-        rmaHistorial = window._fbGetRmaHistorial ? await window._fbGetRmaHistorial() : [];
+    /* Movimientos creados en esta sesión que todavía no se han confirmado en el servidor */
+    let rmaHistorialPending = [];
+    let rmaHistUnsub = null;
+    let rmaHistRetry = null;
+    let rmaHistFlushBusy = false;
+    let rmaHistFlushRetry = null;
+
+    /* Aplica una versión del historial venida del servidor, conservando los movimientos
+       propios aún sin confirmar (para que nunca "desaparezcan" de la pantalla). */
+    function applyRmaHistorialRows(rows) {
+        const list = Array.isArray(rows) ? rows : [];
+        const ids = new Set(list.map(r => r && r.id));
+        rmaHistorial = list.concat(rmaHistorialPending.filter(e => !ids.has(e.id)));
         renderDashboard();
+        if (typeof rmaHistModalOverlay !== 'undefined' && rmaHistModalOverlay.classList.contains('show')) renderRmaHistorial();
+    }
+
+    async function loadRmaHistorial() {
+        const rows = window._fbGetRmaHistorialFresh ? await window._fbGetRmaHistorialFresh()
+                   : (window._fbGetRmaHistorial ? await window._fbGetRmaHistorial() : []);
+        /* null = no se pudo leer: se mantiene lo que ya hay en pantalla (antes se vaciaba) */
+        if (rows !== null) applyRmaHistorialRows(rows);
+    }
+
+    function stopRmaHistorialListener() {
+        clearTimeout(rmaHistRetry); rmaHistRetry = null;
+        clearTimeout(rmaHistFlushRetry); rmaHistFlushRetry = null;
+        if (rmaHistUnsub) { try { rmaHistUnsub(); } catch (e) {} rmaHistUnsub = null; }
+    }
+
+    function startRmaHistorialRealtimeSync() {
+        stopRmaHistorialListener();
+        if (!window._fbListenRmaHistorial) { loadRmaHistorial(); return; }
+        rmaHistUnsub = window._fbListenRmaHistorial(applyRmaHistorialRows, () => {
+            if (rmaHistUnsub) { try { rmaHistUnsub(); } catch (e) {} rmaHistUnsub = null; }
+            loadRmaHistorial();
+            clearTimeout(rmaHistRetry);
+            rmaHistRetry = setTimeout(() => {
+                rmaHistRetry = null;
+                if (window._fbCryptoReady && window._fbCryptoReady()) startRmaHistorialRealtimeSync();
+            }, 10000);
+        });
+    }
+
+    /* Envía al servidor los movimientos pendientes (sin pisar lo que hayan escrito otros) */
+    async function flushRmaHistorial() {
+        if (rmaHistFlushBusy || !rmaHistorialPending.length) return;
+        if (!window._fbAppendRmaHistorial) return;
+        rmaHistFlushBusy = true;
+        try {
+            const batch = rmaHistorialPending.slice();
+            const merged = await window._fbAppendRmaHistorial(batch);
+            if (!merged) {
+                showNotification('No se pudo guardar el historial RMA. Se reintentará automáticamente.');
+                clearTimeout(rmaHistFlushRetry);
+                rmaHistFlushRetry = setTimeout(() => { rmaHistFlushRetry = null; flushRmaHistorial(); }, 15000);
+                return;
+            }
+            const sent = new Set(batch.map(e => e.id));
+            rmaHistorialPending = rmaHistorialPending.filter(e => !sent.has(e.id));
+            applyRmaHistorialRows(merged);
+        } finally { rmaHistFlushBusy = false; }
+        if (rmaHistorialPending.length) flushRmaHistorial();
     }
 
     async function addRmaHistorial(rma, fase, usuario, extra) {
-        rmaHistorial.push(Object.assign({ id: genId('rmahist'), rma, fase, usuario: usuario || 'desconocido', fecha: nowStr() }, extra || {}));
-        await saveRmaHistorial();
+        const entry = Object.assign({ id: genId('rmahist'), rma, fase, usuario: usuario || 'desconocido', fecha: nowStr() }, extra || {});
+        rmaHistorial.push(entry);
+        rmaHistorialPending.push(entry);
+        await flushRmaHistorial();
     }
 
     function updateRmaTrackingBadge() {
@@ -6735,7 +6824,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadIncidencias();
         loadIncidenciasHistorial();   // necesario antes de poder borrar incidencias sin pisar el historial
         startRmaRealtimeSync();
-        loadRmaHistorial();
+        startRmaHistorialRealtimeSync();
         loadRmaContabilidad();
     }
 
@@ -6746,6 +6835,8 @@ document.addEventListener('DOMContentLoaded', () => {
         stopCryptoWatch();
         if (transporteRealtimeUnsub) { try { transporteRealtimeUnsub(); } catch (e) {} transporteRealtimeUnsub = null; }
         stopRmaListener();
+        stopRmaHistorialListener();
+        rmaHistorialPending = [];
         transportEntries = []; lastSyncedTransportRows = []; incidencias = []; incidenciasHistorial = [];
         rmaTracking = []; lastSyncedRmaRows = []; rmaHistorial = []; userRoles = [];
         rmaContabilidad = { precioGarantia: null, precioFueraGarantia: null, historico: [], beneficioClearedAt: null };
