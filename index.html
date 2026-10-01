@@ -2908,6 +2908,7 @@
                         <input type="number" id="rma-ajuste-minutos" step="1" placeholder="0">
                     </div>
                 </div>
+                <div id="rma-ajuste-info" style="display:none; margin:10px 0 4px; padding:10px 12px; border:1px solid var(--border-color); border-radius:8px; font-size:0.9rem;"></div>
                 <div class="rma-accounting-save-row">
                     <button id="rma-ajuste-add-btn" class="inc-add-update-btn"><i class="fas fa-plus"></i> Aplicar ajuste</button>
                     <span id="rma-ajuste-error" style="color:var(--danger-color); font-size:0.85rem; font-weight:700;"></span>
@@ -6531,6 +6532,44 @@ document.addEventListener('DOMContentLoaded', () => {
         rmaAjusteEmpty.style.display = list.length ? 'none' : 'block';
     }
 
+    /* Muestra cuánto tiempo lleva actualmente el RMA escrito (ya con los ajustes aplicados) */
+    const rmaAjusteInfoEl = document.getElementById('rma-ajuste-info');
+    function updateRmaAjusteInfo() {
+        if (!rmaAjusteInfoEl) return;
+        const rma = rmaAjusteRmaEl.value.trim();
+        if (!rma) { rmaAjusteInfoEl.style.display = 'none'; return; }
+        const key = rmaKeyOf(rma);
+        const aj = rmaAjusteMs(rma);
+        const ajTxt = aj ? ` · Ajustes acumulados: <b>${esc(formatSignedDuration(aj))}</b>` : '';
+        let html = null;
+
+        const live = rmaTracking.find(e => rmaKeyOf(e.rma) === key);
+        if (live) {
+            const t = (live.fase === RMA_TICKET_PHASE) ? rmaTicketElapsedMs(live) : rmaCronoElapsedMs(live);
+            const run = (live.cronometro && live.cronometro.running) ? '' : ' (cronómetro en pausa)';
+            html = `<b>RMA ${esc(live.rma)}</b> · Fase: ${esc(live.fase)} · Tiempo actual: <b>${esc(rmaCronoFormat(t))}</b>${(live.fase === RMA_TICKET_PHASE) ? '' : run}${ajTxt}`;
+        } else {
+            const moves = rmaHistorial.filter(h => rmaKeyOf(h.rma) === key);
+            if (moves.length) {
+                const tot = computeRmaStatsData().rmaTotals.find(t => rmaKeyOf(t.rma) === key);
+                const dur = tot && tot.durationMs != null ? rmaCronoFormat(tot.durationMs) : '—';
+                const estado = tot && tot.completed ? 'Finalizado' : 'Fuera del tablero';
+                html = `<b>RMA ${esc(moves[0].rma)}</b> · ${estado} · Tiempo total: <b>${esc(dur)}</b>${ajTxt}`;
+            }
+        }
+        if (html) {
+            rmaAjusteInfoEl.style.color = 'inherit';
+            rmaAjusteInfoEl.innerHTML = html;
+        } else {
+            rmaAjusteInfoEl.style.color = 'var(--danger-color)';
+            rmaAjusteInfoEl.textContent = 'No existe ningún RMA con ese número';
+        }
+        rmaAjusteInfoEl.style.display = 'block';
+    }
+    rmaAjusteRmaEl.addEventListener('input', updateRmaAjusteInfo);
+    /* Se refresca solo cada segundo mientras el modal de Contabilidad está abierto */
+    setInterval(() => { if (rmaAccountingModalOverlay.classList.contains('show')) updateRmaAjusteInfo(); }, 1000);
+
     async function addRmaAjusteTiempo() {
         rmaAjusteErrorEl.textContent = '';
         const fail = (msg) => { rmaAjusteErrorEl.textContent = msg; };
@@ -6558,8 +6597,9 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } catch (e) { rmaAjusteAddBtn.disabled = false; return; }   // el aviso de error ya se mostró
         rmaAjusteAddBtn.disabled = false;
-        rmaAjusteRmaEl.value = ''; rmaAjusteDiasEl.value = ''; rmaAjusteHorasEl.value = ''; rmaAjusteMinutosEl.value = '';
+        rmaAjusteDiasEl.value = ''; rmaAjusteHorasEl.value = ''; rmaAjusteMinutosEl.value = '';
         refreshTimeViews();
+        updateRmaAjusteInfo();
         showNotification(`Tiempo de ${entry.rma} ajustado: ${formatSignedDuration(entry.ms)}`);
     }
 
@@ -6567,6 +6607,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!confirm('¿Quitar este ajuste de tiempo? El tiempo del RMA volverá a calcularse sin él.')) return;
         await mutateRmaContabilidad(c => { c.ajustesTiempo = (c.ajustesTiempo || []).filter(a => a.id !== id); return c; });
         refreshTimeViews();
+        updateRmaAjusteInfo();
         showNotification('Ajuste de tiempo quitado');
     };
 
