@@ -765,6 +765,25 @@
             }
         };
 
+        /* Escucha en tiempo real la contabilidad (precios y ajustes de tiempo): todos los usuarios
+           ven al instante un ajuste hecho por el administrador. Solo cuenta 1 lectura por cambio real. */
+        window._fbListenRmaContabilidad = (onChange, onError) => {
+            let seq = 0;
+            try {
+                return onSnapshot(doc(db, 'rma_contabilidad', 'entries'), async (snap) => {
+                    const mine = ++seq;
+                    try {
+                        const d = snap.exists() ? await decodeDoc(snap.data(), 'rma_contabilidad/entries') : null;
+                        if (mine === seq) onChange(d);
+                    } catch (e) { console.error('Firebase decrypt rma_contabilidad error:', e); if (onError) onError(e); }
+                }, (e) => { console.error('Firebase onSnapshot rma_contabilidad error:', e); if (onError) onError(e); });
+            } catch (e) {
+                console.error('Firebase listen rma_contabilidad error:', e);
+                if (onError) onError(e);
+                return () => {};
+            }
+        };
+
         /* Lee-modifica-escribe en una transacción: se aplica solo el cambio pedido sobre lo que hay
            AHORA en el servidor, así no se pisan los cambios de otros usuarios. */
         window._fbMutateRmaContabilidad = async (fn) => {
@@ -779,7 +798,8 @@
                         precioGarantia: (typeof cur.precioGarantia === 'number') ? cur.precioGarantia : null,
                         precioFueraGarantia: (typeof cur.precioFueraGarantia === 'number') ? cur.precioFueraGarantia : null,
                         historico: Array.isArray(cur.historico) ? cur.historico : [],
-                        beneficioClearedAt: (typeof cur.beneficioClearedAt === 'string') ? cur.beneficioClearedAt : null
+                        beneficioClearedAt: (typeof cur.beneficioClearedAt === 'string') ? cur.beneficioClearedAt : null,
+                        ajustesTiempo: Array.isArray(cur.ajustesTiempo) ? cur.ajustesTiempo : []
                     };
                     const next = fn(state) || state;
                     tx.set(ref, await encodeDoc(next, aad));
@@ -2118,7 +2138,7 @@
                     <div class="dash-list" id="dash-list-2dias">
                         <div class="dash-list-empty">Cargando…</div>
                     </div>
-                    <h3 class="dashboard-title dash-title-danger"><i class="fas fa-hourglass-half"></i> Más de 30 días en "En espera"</h3>
+                    <h3 class="dashboard-title dash-title-danger"><i class="fas fa-hourglass-half"></i> Más de 90 días en "En espera"</h3>
                     <div class="dash-list" id="dash-list-30dias">
                         <div class="dash-list-empty">Cargando…</div>
                     </div>
@@ -2865,6 +2885,41 @@
                 </table>
                 </div>
                 <div id="rma-accounting-hist-empty" class="inc-empty" style="display:none;">Todavía no se ha añadido ningún mes anterior.</div>
+
+                <hr style="border:none; border-top:1px solid var(--border-color); margin:22px 0;">
+
+                <h3 class="stats-section-title"><i class="fas fa-stopwatch"></i> Ajustar tiempo de un RMA</h3>
+                <p style="color:var(--secondary-color); font-size:0.85rem; margin-top:0;">Suma o resta tiempo a un RMA (usa números negativos para restar, p. ej. -1 en horas). El ajuste se aplica en toda la web: cronómetro, dashboard y estadísticas, también para RMAs ya finalizados. El tiempo de un RMA nunca baja de 0. Los ajustes son acumulativos y se pueden quitar de la lista.</p>
+                <div class="rma-accounting-fields">
+                    <div class="rma-accounting-field">
+                        <label for="rma-ajuste-rma">Nº de RMA</label>
+                        <input type="text" id="rma-ajuste-rma" placeholder="RMA...">
+                    </div>
+                    <div class="rma-accounting-field">
+                        <label for="rma-ajuste-dias">Días</label>
+                        <input type="number" id="rma-ajuste-dias" step="1" placeholder="0">
+                    </div>
+                    <div class="rma-accounting-field">
+                        <label for="rma-ajuste-horas">Horas</label>
+                        <input type="number" id="rma-ajuste-horas" step="1" placeholder="0">
+                    </div>
+                    <div class="rma-accounting-field">
+                        <label for="rma-ajuste-minutos">Minutos</label>
+                        <input type="number" id="rma-ajuste-minutos" step="1" placeholder="0">
+                    </div>
+                </div>
+                <div class="rma-accounting-save-row">
+                    <button id="rma-ajuste-add-btn" class="inc-add-update-btn"><i class="fas fa-plus"></i> Aplicar ajuste</button>
+                    <span id="rma-ajuste-error" style="color:var(--danger-color); font-size:0.85rem; font-weight:700;"></span>
+                </div>
+
+                <div class="table-responsive" style="margin-top:14px;">
+                <table class="stats-table">
+                    <thead><tr><th>RMA</th><th>Ajuste</th><th>Fecha</th><th>Usuario</th><th></th></tr></thead>
+                    <tbody id="rma-ajuste-tbody"></tbody>
+                </table>
+                </div>
+                <div id="rma-ajuste-empty" class="inc-empty" style="display:none;">Todavía no se ha ajustado el tiempo de ningún RMA.</div>
             </div>
         </div>
     </div>
@@ -5050,7 +5105,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!entry.cronometro || typeof entry.cronometro !== 'object') entry.cronometro = { running: false, accumulatedMs: 0, startedAt: null };
         const c = entry.cronometro;
         if (c.running) {
-            c.accumulatedMs = rmaCronoElapsedMs(entry);
+            c.accumulatedMs = rmaCronoRawMs(entry);
             c.running = false;
             c.startedAt = null;
         }
@@ -5105,7 +5160,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const c = entry.cronometro;
         if (newPhase === 'En espera' || newPhase === 'Pendiente Recibir' || newPhase === RMA_TICKET_PHASE) {
             if (c.running) {
-                c.accumulatedMs = rmaCronoElapsedMs(entry);
+                c.accumulatedMs = rmaCronoRawMs(entry);
                 c.running = false;
                 c.startedAt = null;
             }
@@ -5210,17 +5265,23 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     /* ── Cronómetro por RMA ── */
-    function rmaCronoElapsedMs(entry) {
+    /* Tiempo real cronometrado, SIN ajustes manuales (es el que se "congela" al pausar) */
+    function rmaCronoRawMs(entry) {
         const c = entry.cronometro || { running: false, accumulatedMs: 0, startedAt: null };
         let ms = c.accumulatedMs || 0;
         if (c.running && c.startedAt) ms += (Date.now() - c.startedAt);
         return ms;
     }
 
+    /* Tiempo mostrado = cronometrado + ajuste manual de Contabilidad (nunca por debajo de 0) */
+    function rmaCronoElapsedMs(entry) {
+        return Math.max(0, rmaCronoRawMs(entry) + rmaAjusteMs(entry.rma));
+    }
+
     /* Tiempo transcurrido en la fase Tickets (solo informativo; no entra en estadísticas) */
     function rmaTicketElapsedMs(entry) {
         if (entry.fase !== RMA_TICKET_PHASE || typeof entry.ticketStartedAt !== 'number') return 0;
-        return Math.max(0, Date.now() - entry.ticketStartedAt);
+        return Math.max(0, Date.now() - entry.ticketStartedAt + rmaAjusteMs(entry.rma));
     }
 
     /* Cada 24 horas acumuladas cuentan como 1 "día" */
@@ -5652,6 +5713,32 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
 
+        /* Ajustes manuales de tiempo (Contabilidad RMA): se suman al total del RMA y a sus tramos por fase.
+           El ajuste va al último tramo en Repair (o al último tramo si no hay Repair); si es negativo y ese
+           tramo se queda en 0, el resto se resta de los tramos vecinos. Nunca queda un tiempo negativo. */
+        rmaTotals.forEach(t => {
+            const aj = rmaAjusteMs(t.rma);
+            if (!aj) return;
+            t.ajusteMs = aj;
+            if (t.durationMs != null) t.durationMs = Math.max(0, t.durationMs + aj);
+            const mine = allPairs.filter(p => p.rma === t.rma);
+            if (!mine.length) return;
+            let pref = -1;
+            mine.forEach((p, i) => { if (p.fase === 'Repair') pref = i; });
+            if (pref < 0) pref = mine.length - 1;
+            if (aj > 0) { mine[pref].durationMs += aj; return; }
+            let rem = -aj;
+            const order = [];
+            for (let i = pref; i >= 0; i--) order.push(i);
+            for (let i = pref + 1; i < mine.length; i++) order.push(i);
+            for (const i of order) {
+                if (rem <= 0) break;
+                const take = Math.min(mine[i].durationMs, rem);
+                mine[i].durationMs -= take;
+                rem -= take;
+            }
+        });
+
         return { allPairs, rmaTotals };
     }
 
@@ -5841,7 +5928,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .filter(e => e.fase !== 'Pendiente Recibir' && e.fase !== 'En espera' && e.fase !== RMA_TICKET_PHASE)
             .map(e => {
                 const d = parseFechaHora(e.fecha);
-                const dias = d ? (now - d.getTime()) / 86400000 : 0;
+                const dias = d ? Math.max(0, now - d.getTime() + rmaAjusteMs(e.rma)) / 86400000 : 0;
                 return { rma: e.rma, fase: e.fase, dias };
             })
             .filter(e => e.dias > 2)
@@ -5851,27 +5938,27 @@ document.addEventListener('DOMContentLoaded', () => {
             ? list2dias.map(e => `<div class="dash-list-item"><span class="dash-item-rma">${esc(e.rma)}</span><span class="dash-item-fase">${esc(e.fase)}</span><span class="dash-item-dias">${Math.floor(e.dias)}d</span></div>`).join('')
             : '<div class="dash-list-empty">Ningún equipo supera los 2 días</div>';
 
-        /* ── Listado: más de 30 días en "En espera" (los Tickets tienen su propio listado aparte) ── */
+        /* ── Listado: más de 90 días en "En espera" (los Tickets tienen su propio listado aparte) ── */
         const list30dias = rmaTracking
             .filter(e => e.fase === 'En espera')
             .map(e => {
                 const d = parseFechaHora(e.fecha);
-                const dias = d ? (now - d.getTime()) / 86400000 : 0;
+                const dias = d ? Math.max(0, now - d.getTime() + rmaAjusteMs(e.rma)) / 86400000 : 0;
                 return { rma: e.rma, dias };
             })
-            .filter(e => e.dias > 30)
+            .filter(e => e.dias > 90)
             .sort((a, b) => b.dias - a.dias);
 
         dashList30diasEl.innerHTML = list30dias.length
             ? list30dias.map(e => `<div class="dash-list-item"><span class="dash-item-rma">${esc(e.rma)}</span><span class="dash-item-dias">${Math.floor(e.dias)}d</span></div>`).join('')
-            : '<div class="dash-list-empty">Ningún equipo supera los 30 días en espera</div>';
+            : '<div class="dash-list-empty">Ningún equipo supera los 90 días en espera</div>';
 
         /* ── Listado: Tickets Abiertos (RMAs marcados con el check "Ticket" en su Info) ── */
         const listTickets = rmaTracking
             .filter(e => e.fase === RMA_TICKET_PHASE)
             .map(e => {
                 const d = parseFechaHora(e.fecha);
-                const dias = d ? (now - d.getTime()) / 86400000 : 0;
+                const dias = d ? Math.max(0, now - d.getTime() + rmaAjusteMs(e.rma)) / 86400000 : 0;
                 return { rma: e.rma, dias };
             })
             .sort((a, b) => b.dias - a.dias);
@@ -5885,7 +5972,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .filter(e => e.garantia === 'G' && e.fase === 'En espera' && !e.garantiaDismissed)
             .map(e => {
                 const d = parseFechaHora(e.fecha);
-                const minutos = d ? (now - d.getTime()) / 60000 : 0;
+                const minutos = d ? Math.max(0, now - d.getTime() + rmaAjusteMs(e.rma)) / 60000 : 0;
                 return { id: e.id, rma: e.rma, minutos };
             })
             .filter(e => e.minutos > 30)
@@ -6068,7 +6155,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     : g === 'F'
                         ? '<span class="rma-garantia-dot f"></span>F'
                         : '—';
-                return `<tr><td>${esc(t.rma)}</td><td>${gCell}</td><td>${inicio}</td><td>${esc(t.ultimaFase)}</td><td>${badge}</td><td>${formatDuration(t.durationMs)}</td></tr>`;
+                return `<tr><td>${esc(t.rma)}</td><td>${gCell}</td><td>${inicio}</td><td>${esc(t.ultimaFase)}</td><td>${badge}</td><td>${formatDuration(t.durationMs)}${t.ajusteMs ? ` <span title="Incluye un ajuste manual de ${esc(formatSignedDuration(t.ajusteMs))} (Contabilidad RMA)" style="color:var(--warning-color); font-weight:700; cursor:help;">✎</span>` : ''}</td></tr>`;
             });
         statsRmaTbody.innerHTML = rmaRows.join('');
         statsRmaEmpty.style.display = rmaRows.length ? 'none' : 'block';
@@ -6091,7 +6178,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && rmaStatsModalOverlay.classList.contains('show')) closeRmaStatsModal(); });
 
     /* ── Contabilidad RMA (precio de reparación en/fuera de garantía) ── */
-    let rmaContabilidad = { precioGarantia: null, precioFueraGarantia: null, historico: [], beneficioClearedAt: null };
+    let rmaContabilidad = { precioGarantia: null, precioFueraGarantia: null, historico: [], beneficioClearedAt: null, ajustesTiempo: [] };
 
     function applyRmaContabilidad(data) {
         if (!data) return;
@@ -6099,6 +6186,63 @@ document.addEventListener('DOMContentLoaded', () => {
         rmaContabilidad.precioFueraGarantia = (typeof data.precioFueraGarantia === 'number') ? data.precioFueraGarantia : null;
         rmaContabilidad.historico = Array.isArray(data.historico) ? data.historico : [];
         rmaContabilidad.beneficioClearedAt = (typeof data.beneficioClearedAt === 'string') ? data.beneficioClearedAt : null;
+        rmaContabilidad.ajustesTiempo = Array.isArray(data.ajustesTiempo) ? data.ajustesTiempo : [];
+    }
+
+    /* ── Ajustes manuales de tiempo por RMA (Contabilidad RMA) ──
+       Cada ajuste suma (o resta) tiempo a un RMA. Se aplica allí donde se muestra el tiempo de ese
+       RMA: cronómetro de la tarjeta, tiempo medio del dashboard, listados del dashboard y estadísticas.
+       Se guardan aparte (no se mezclan con el cronómetro real), así que se pueden quitar en cualquier
+       momento y funcionan igual con RMAs ya finalizados. */
+    function rmaKeyOf(r) { return String(r ?? '').trim().toLowerCase(); }
+
+    function rmaAjusteMs(rma) {
+        let arr;
+        try { arr = rmaContabilidad.ajustesTiempo; } catch (e) { return 0; }
+        if (!Array.isArray(arr) || !arr.length) return 0;
+        if (!rmaAjusteMs._c || rmaAjusteMs._c.src !== arr || rmaAjusteMs._c.len !== arr.length) {
+            const m = {};
+            arr.forEach(a => { if (a && typeof a.ms === 'number') { const k = rmaKeyOf(a.rma); m[k] = (m[k] || 0) + a.ms; } });
+            rmaAjusteMs._c = { src: arr, len: arr.length, map: m };
+        }
+        return rmaAjusteMs._c.map[rmaKeyOf(rma)] || 0;
+    }
+
+    /* Repinta todo lo que depende de los tiempos (tablero, dashboard, estadísticas y contabilidad si están abiertas) */
+    function refreshTimeViews() {
+        renderRmaTracking();   // también repinta el dashboard y la gráfica
+        if (rmaStatsModalOverlay.classList.contains('show')) renderRmaStats();
+        if (rmaAccountingModalOverlay.classList.contains('show')) {
+            renderRmaAccountingBeneficio();
+            renderRmaAccountingHistorico();
+            renderRmaAccountingAjustes();
+        }
+    }
+
+    /* Escucha en tiempo real de la contabilidad: los ajustes y precios llegan solos a todos los usuarios */
+    let contabUnsub = null, contabRetry = null, lastContabJson = '';
+    function stopContabilidadListener() {
+        clearTimeout(contabRetry); contabRetry = null;
+        if (contabUnsub) { try { contabUnsub(); } catch (e) {} contabUnsub = null; }
+    }
+    function startContabilidadRealtimeSync() {
+        stopContabilidadListener();
+        if (!window._fbListenRmaContabilidad) { loadRmaContabilidad(); return; }
+        contabUnsub = window._fbListenRmaContabilidad((data) => {
+            const j = JSON.stringify(data);
+            if (j === lastContabJson) return;       // nada nuevo (p. ej. el eco de nuestro propio guardado)
+            lastContabJson = j;
+            applyRmaContabilidad(data);
+            refreshTimeViews();
+        }, () => {
+            if (contabUnsub) { try { contabUnsub(); } catch (e) {} contabUnsub = null; }
+            loadRmaContabilidad();
+            clearTimeout(contabRetry);
+            contabRetry = setTimeout(() => {
+                contabRetry = null;
+                if (window._fbCryptoReady && window._fbCryptoReady()) startContabilidadRealtimeSync();
+            }, 10000);
+        });
     }
 
     async function loadRmaContabilidad() {
@@ -6112,6 +6256,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function mutateRmaContabilidad(fn) {
         if (!window._fbMutateRmaContabilidad) throw new Error('sin-conexion');
         const next = await window._fbMutateRmaContabilidad(fn);
+        lastContabJson = JSON.stringify(next);
         applyRmaContabilidad(next);
     }
 
@@ -6307,6 +6452,7 @@ document.addEventListener('DOMContentLoaded', () => {
         rmaAccountingHistAnio.value = new Date().getFullYear();
         renderRmaAccountingBeneficio();
         renderRmaAccountingHistorico();
+        renderRmaAccountingAjustes();
         rmaAccountingModalOverlay.classList.add('show');
         setTimeout(() => rmaAccountingPriceGInput.focus(), 50);
     }
@@ -6353,6 +6499,80 @@ document.addEventListener('DOMContentLoaded', () => {
     rmaAccountingClearFiltersBtn.addEventListener('click', clearRmaAccountingFilters);
     rmaAccountingSaveBtn.addEventListener('click', saveRmaAccounting);
     rmaAccountingHistAddBtn.addEventListener('click', addRmaAccountingHistorico);
+
+    /* ── Ajustar tiempo de un RMA ── */
+    const rmaAjusteRmaEl     = document.getElementById('rma-ajuste-rma');
+    const rmaAjusteDiasEl    = document.getElementById('rma-ajuste-dias');
+    const rmaAjusteHorasEl   = document.getElementById('rma-ajuste-horas');
+    const rmaAjusteMinutosEl = document.getElementById('rma-ajuste-minutos');
+    const rmaAjusteAddBtn    = document.getElementById('rma-ajuste-add-btn');
+    const rmaAjusteErrorEl   = document.getElementById('rma-ajuste-error');
+    const rmaAjusteTbody     = document.getElementById('rma-ajuste-tbody');
+    const rmaAjusteEmpty     = document.getElementById('rma-ajuste-empty');
+
+    /* "+1d 02h 30m" / "-3h 00m": 1 día = 24 h */
+    function formatSignedDuration(ms) {
+        const sign = ms < 0 ? '-' : '+';
+        let totalMin = Math.round(Math.abs(ms) / 60000);
+        const d = Math.floor(totalMin / 1440); totalMin -= d * 1440;
+        const h = Math.floor(totalMin / 60), m = totalMin % 60;
+        return sign + [d ? `${d}d` : '', `${pad2(h)}h`, `${pad2(m)}m`].filter(Boolean).join(' ');
+    }
+
+    function renderRmaAccountingAjustes() {
+        const list = (rmaContabilidad.ajustesTiempo || []).slice().reverse();   // el más reciente primero
+        rmaAjusteTbody.innerHTML = list.map(a => `<tr>
+            <td>${esc(a.rma)}</td>
+            <td style="font-weight:700; color:${a.ms < 0 ? 'var(--danger-color)' : 'var(--success-color)'};">${esc(formatSignedDuration(a.ms))}</td>
+            <td>${esc(a.fecha || '')}</td>
+            <td>${esc(a.usuario || '')}</td>
+            <td><button class="rma-card-del" title="Quitar este ajuste" onclick="rmaAjusteRemove('${esc(a.id)}')"><i class="fas fa-trash"></i></button></td>
+        </tr>`).join('');
+        rmaAjusteEmpty.style.display = list.length ? 'none' : 'block';
+    }
+
+    async function addRmaAjusteTiempo() {
+        rmaAjusteErrorEl.textContent = '';
+        const fail = (msg) => { rmaAjusteErrorEl.textContent = msg; };
+        const rma = rmaAjusteRmaEl.value.trim();
+        const num = (el) => { const v = el.value.trim(); return v === '' ? 0 : Number(v); };
+        const d = num(rmaAjusteDiasEl), h = num(rmaAjusteHorasEl), m = num(rmaAjusteMinutosEl);
+
+        if (!rma) return fail('Indica el número de RMA');
+        if (![d, h, m].every(Number.isInteger)) return fail('Días, horas y minutos deben ser números enteros (pueden ser negativos)');
+        const totalMin = d * 1440 + h * 60 + m;
+        if (totalMin === 0) return fail('Indica un tiempo distinto de 0');
+        if (Math.abs(totalMin) > 3650 * 1440) return fail('Máximo 3650 días por ajuste');
+
+        const key = rmaKeyOf(rma);
+        const found = rmaTracking.find(e => rmaKeyOf(e.rma) === key) || rmaHistorial.find(h2 => rmaKeyOf(h2.rma) === key);
+        if (!found) return fail('No existe ningún RMA con ese número (ni en seguimiento ni en el historial)');
+
+        const entry = { id: genId('rmaajuste'), rma: String(found.rma), ms: totalMin * 60000, fecha: nowStr(), usuario: currentUserEmail };
+        rmaAjusteAddBtn.disabled = true;
+        try {
+            await mutateRmaContabilidad(c => {
+                if (!Array.isArray(c.ajustesTiempo)) c.ajustesTiempo = [];
+                c.ajustesTiempo.push(entry);
+                return c;
+            });
+        } catch (e) { rmaAjusteAddBtn.disabled = false; return; }   // el aviso de error ya se mostró
+        rmaAjusteAddBtn.disabled = false;
+        rmaAjusteRmaEl.value = ''; rmaAjusteDiasEl.value = ''; rmaAjusteHorasEl.value = ''; rmaAjusteMinutosEl.value = '';
+        refreshTimeViews();
+        showNotification(`Tiempo de ${entry.rma} ajustado: ${formatSignedDuration(entry.ms)}`);
+    }
+
+    window.rmaAjusteRemove = async function(id) {
+        if (!confirm('¿Quitar este ajuste de tiempo? El tiempo del RMA volverá a calcularse sin él.')) return;
+        await mutateRmaContabilidad(c => { c.ajustesTiempo = (c.ajustesTiempo || []).filter(a => a.id !== id); return c; });
+        refreshTimeViews();
+        showNotification('Ajuste de tiempo quitado');
+    };
+
+    rmaAjusteAddBtn.addEventListener('click', addRmaAjusteTiempo);
+    [rmaAjusteRmaEl, rmaAjusteDiasEl, rmaAjusteHorasEl, rmaAjusteMinutosEl].forEach(el =>
+        el.addEventListener('keydown', (e) => { if (e.key === 'Enter') addRmaAjusteTiempo(); }));
     rmaBeneficioClearBtn.addEventListener('click', rmaBeneficioClearAll);
 
     statsSearchRma.addEventListener('input', renderRmaStats);
@@ -7084,7 +7304,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadIncidenciasHistorial();   // necesario antes de poder borrar incidencias sin pisar el historial
         startRmaRealtimeSync();
         startRmaHistorialRealtimeSync();
-        loadRmaContabilidad();
+        startContabilidadRealtimeSync();
     }
 
     function stopDataSync() {
@@ -7096,11 +7316,12 @@ document.addEventListener('DOMContentLoaded', () => {
         stopRmaListener();
         stopRmaHistorialListener();
         stopIncidenciasListener();
+        stopContabilidadListener(); lastContabJson = '';
         rmaHistorialPending = [];
         transportEntries = []; lastSyncedTransportRows = []; incidencias = []; incidenciasHistorial = [];
         lastSyncedIncRows = []; lastIncRawJson = ''; lastSyncedIncHistRows = []; lastSyncedRoles = [];
         rmaTracking = []; lastSyncedRmaRows = []; rmaHistorial = []; userRoles = [];
-        rmaContabilidad = { precioGarantia: null, precioFueraGarantia: null, historico: [], beneficioClearedAt: null };
+        rmaContabilidad = { precioGarantia: null, precioFueraGarantia: null, historico: [], beneficioClearedAt: null, ajustesTiempo: [] };
         if (window._fbCryptoLock) window._fbCryptoLock();
         try { renderTransport(); renderIncidencias(); renderRmaTracking(); renderDashboard(); renderDashBeneficioChart(); } catch (e) {}
     }
