@@ -3595,7 +3595,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const recLines = recogidas.map(r => {
                 const v = String(r ?? '').trim();
                 return v
-                    ? `<div><span class="rec-link" title="Copiar y abrir Correos Express" data-rec="${esc(v)}" onclick="tpOpenRecogida(this.dataset.rec)">${esc(v)}</span></div>`
+                    ? `<div><span class="rec-link" title="Copiar y abrir ${v.length > 12 ? 'CTT Express' : 'Correos Express'}" data-rec="${esc(v)}" onclick="tpOpenRecogida(this.dataset.rec)">${esc(v)}</span></div>`
                     : `<div></div>`;
             }).join('');
 
@@ -3653,11 +3653,16 @@ document.addEventListener('DOMContentLoaded', () => {
     window.renderTransport = renderTransport;
 
     /* Click on recogida number: copy to clipboard and open Correos Express */
+    /* Recogidas con más de 12 caracteres → CTT Express; el resto → Correos Express */
+    const TP_CTT_URL = 'https://webcliente.cttexpress.com/shippings-tracking?centres=3S%2BrfLMt4mm%2Bk%2Bc36jaf5Q%3D%3D&dateFrom=2026-09-01&dateTo=2026-10-01&incidentsPage=0&incidentsRowsPerPage=10&incidentsSortColumn=shippingDate&incidentsSortType=desc&postalCodeSource=destin&returnsPage=0&returnsRowsPerPage=10&returnsSortColumn=shippingDate&returnsSortType=desc&selectedTracking=shipping&shippingsPage=0&shippingsRowsPerPage=10&shippingsSortColumn=shippingDate&shippingsSortType=desc&unscheduledPickupRowsPerPage=50&unscheduledPickupSortColumn=shippingDate&unscheduledPickupSortType=desc';
+    const TP_CORREOS_URL = 'https://clientes.correosexpress.com/group/correosexpress/recogidas';
+
     window.tpOpenRecogida = function(rec) {
+        rec = String(rec ?? '').trim();
         navigator.clipboard.writeText(rec)
             .then(() => showNotification(`Nº ${rec} copiado al portapapeles`))
             .catch(() => {});
-        window.open('https://clientes.correosexpress.com/group/correosexpress/recogidas', '_blank');
+        window.open(rec.length > 12 ? TP_CTT_URL : TP_CORREOS_URL, '_blank');
     };
 
     /* Busca la posición real en transportEntries a partir del id */
