@@ -2166,9 +2166,17 @@
                     </div>
                 </div>
                 <div class="dash-col dash-col-list">
-                    <h3 class="dashboard-title dash-title-garantia"><i class="fas fa-shield-halved"></i> Nuevos equipos en garantía</h3>
-                    <div class="dash-list" id="dash-list-garantia">
-                        <div class="dash-list-empty">Cargando…</div>
+                    <div class="dash-notif-section" id="dash-prevision-section" style="display:none;">
+                        <h3 class="dashboard-title dash-title-transfer"><i class="fas fa-truck-ramp-box"></i> Previsión de entrada</h3>
+                        <div class="dash-list">
+                            <div class="dash-list-item"><span class="dash-item-rma">Equipos esperados</span><span class="dash-item-dias" id="dash-prevision-value" style="color:var(--primary-color, #0d6efd);">—</span></div>
+                        </div>
+                    </div>
+                    <div class="dash-notif-section" id="dash-garantia-section" style="display:none;">
+                        <h3 class="dashboard-title dash-title-garantia"><i class="fas fa-shield-halved"></i> Nuevos equipos en garantía</h3>
+                        <div class="dash-list" id="dash-list-garantia">
+                            <div class="dash-list-empty">Cargando…</div>
+                        </div>
                     </div>
                 </div>
                 <div class="dash-col dash-col-beneficio">
@@ -3924,6 +3932,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tbody.innerHTML = '';
         updateBadge();
         tpPopulateEstadoFilter();
+        renderDashPrevision();
 
         if (transportEntries.length === 0) {
             empty.style.display = 'block';
@@ -4321,15 +4330,6 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('navigation-buttons').style.display = 'none';
             /* No se toca el innerHTML de #no-data-message: contiene el dashboard */
             document.getElementById('no-data-message').style.display = 'block';
-            let doneMsg = document.getElementById('all-processed-msg');
-            if (!doneMsg) {
-                doneMsg = document.createElement('p');
-                doneMsg.id = 'all-processed-msg';
-                doneMsg.textContent = 'Todos los registros han sido procesados.';
-                const nd = document.getElementById('no-data-message');
-                nd.parentNode.insertBefore(doneMsg, nd);
-            }
-            doneMsg.style.display = 'block';
         } else {
             if (currentIndex >= currentData.length) currentIndex = currentData.length - 1;
             displayEntry(currentIndex);
@@ -6062,6 +6062,21 @@ document.addEventListener('DOMContentLoaded', () => {
         renderDashboard();
     };
 
+    /* Previsión de entrada: cuenta los equipos del Panel de Transporte cuyo
+       Estado es EFECTUADA (ignorando fecha y hora) y muestra un margen de ±2.
+       Ej.: 10 equipos → "entre 8 - 12". Si no hay ninguno, se oculta. */
+    function renderDashPrevision() {
+        const sec = document.getElementById('dash-prevision-section');
+        const val = document.getElementById('dash-prevision-value');
+        if (!sec || !val) return;
+        const n = (typeof transportEntries !== 'undefined' ? transportEntries : [])
+            .filter(e => (e.estados || []).some(s => limpiarEstadoTexto(s).toUpperCase() === 'EFECTUADA'))
+            .length;
+        if (!n) { sec.style.display = 'none'; return; }
+        val.textContent = `entre ${Math.max(0, n - 2)} - ${n + 2}`;
+        sec.style.display = '';
+    }
+
     function renderDashboard() {
         if (!dashAvgTimeEl) return;
 
@@ -6182,7 +6197,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button class="dash-item-eye" title="Descartar aviso" onclick="dismissGarantiaAlert('${e.id}')"><i class="fas fa-eye"></i></button>
                 </div>`;
             }).join('')
-            : '<div class="dash-list-empty">Ningún equipo en garantía supera los 30 min en espera</div>';
+            : '';
+        const garantiaSecEl = document.getElementById('dash-garantia-section');
+        if (garantiaSecEl) garantiaSecEl.style.display = listGarantia.length ? '' : 'none';
+
+        /* ── Previsión de entrada (equipos en Transporte con estado EFECTUADA) ── */
+        renderDashPrevision();
 
         /* ── Gráfica de beneficio mensual (Contabilidad) ── */
         renderDashBeneficioChart();
