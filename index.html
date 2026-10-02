@@ -1501,6 +1501,11 @@
             border: 1px solid #ccc; font-size: 0.95rem;
         }
         .rma-accounting-field input[type="number"]:focus { outline: none; border-color: var(--primary-color); }
+        .rma-accounting-field select {
+            padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px;
+            font-size: 0.95rem; background: var(--card-bg, var(--bg-color)); color: var(--text-color);
+        }
+        .rma-accounting-field select:focus { outline: none; border-color: var(--primary-color); }
         .rma-accounting-field .rma-accounting-currency {
             position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
             color: var(--secondary-color); font-size: 0.85rem; pointer-events: none;
@@ -2889,11 +2894,19 @@
                 <hr style="border:none; border-top:1px solid var(--border-color); margin:22px 0;">
 
                 <h3 class="stats-section-title"><i class="fas fa-stopwatch"></i> Ajustar tiempo de un RMA</h3>
-                <p style="color:var(--secondary-color); font-size:0.85rem; margin-top:0;">Suma o resta tiempo a un RMA (usa números negativos para restar, p. ej. -1 en horas). El ajuste solo afecta al tiempo de espera de los RMAs que están en la fase «En espera» (listado «Más de 90 días en En espera»). No modifica el cronómetro, el tiempo medio ni las estadísticas. El tiempo nunca baja de 0. Los ajustes son acumulativos y se pueden quitar de la lista.</p>
+                <p style="color:var(--secondary-color); font-size:0.85rem; margin-top:0;">Suma o resta tiempo a un RMA (usa números negativos para restar, p. ej. -1 en horas). Elige a qué cronómetro se aplica: <b>Seguimiento</b> (tarjeta, tiempo medio y estadísticas), <b>En espera</b> (listado «Más de 90 días en En espera», solo mientras el RMA está en esa fase) o <b>Ticket</b> (solo «Tickets Abiertos», mientras el RMA tiene ticket abierto; no entra en estadísticas). El tiempo nunca baja de 0. Los ajustes son acumulativos y se pueden quitar de la lista.</p>
                 <div class="rma-accounting-fields">
                     <div class="rma-accounting-field">
                         <label for="rma-ajuste-rma">Nº de RMA</label>
                         <input type="text" id="rma-ajuste-rma" placeholder="RMA...">
+                    </div>
+                    <div class="rma-accounting-field">
+                        <label for="rma-ajuste-crono">Cronómetro</label>
+                        <select id="rma-ajuste-crono">
+                            <option value="seguimiento">Seguimiento</option>
+                            <option value="espera">En espera</option>
+                            <option value="ticket">Ticket</option>
+                        </select>
                     </div>
                     <div class="rma-accounting-field">
                         <label for="rma-ajuste-dias">Días</label>
@@ -2916,7 +2929,7 @@
 
                 <div class="table-responsive" style="margin-top:14px;">
                 <table class="stats-table">
-                    <thead><tr><th>RMA</th><th>Ajuste</th><th>Fecha</th><th>Usuario</th><th></th></tr></thead>
+                    <thead><tr><th>RMA</th><th>Cronómetro</th><th>Ajuste</th><th>Fecha</th><th>Usuario</th><th></th></tr></thead>
                     <tbody id="rma-ajuste-tbody"></tbody>
                 </table>
                 </div>
@@ -4613,6 +4626,15 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             entry.ticketStartedAt = null;
         }
+        /* Cronómetro "Espera": mide cuánto lleva el RMA en la fase En espera (es el que se usa en
+           "Más de 90 días en En espera"). Independiente del cronómetro de seguimiento y del de Ticket. */
+        if (entry.fase === 'En espera') {
+            if (typeof entry.esperaStartedAt !== 'number' || !isFinite(entry.esperaStartedAt)) {
+                entry.esperaStartedAt = fechaTs(entry.fecha) || Date.now();
+            }
+        } else {
+            entry.esperaStartedAt = null;
+        }
         /* Con "En espera de…" activo el cronómetro siempre debe estar pausado */
         if (entry.esperaMotivo && entry.cronometro.running) {
             entry.cronometro.accumulatedMs += (Date.now() - (entry.cronometro.startedAt || Date.now()));
@@ -5155,6 +5177,14 @@ document.addEventListener('DOMContentLoaded', () => {
             rmaTracking[idx].ticketStartedAt = null;
         }
 
+        /* Cronómetro "Espera": arranca al entrar en la fase En espera y se detiene al salir.
+           Solo sirve para el listado de +90 días; no entra en ninguna estadística. */
+        if (newPhase === 'En espera' && oldPhase !== 'En espera') {
+            rmaTracking[idx].esperaStartedAt = Date.now();
+        } else if (newPhase !== 'En espera') {
+            rmaTracking[idx].esperaStartedAt = null;
+        }
+
         /* Cronómetro automático según fase: en "En espera" se pausa, en el resto continúa/se reanuda */
         const entry = rmaTracking[idx];
         if (!entry.cronometro) entry.cronometro = { running: false, accumulatedMs: 0, startedAt: null };
@@ -5278,16 +5308,22 @@ document.addEventListener('DOMContentLoaded', () => {
         return ms;
     }
 
-    /* Tiempo mostrado = solo el cronómetro (el ajuste manual de Contabilidad NO se aplica aquí:
-       solo afecta al tiempo de espera de los RMAs en "En espera") */
+    /* Tiempo mostrado = cronómetro + ajuste manual de Contabilidad para el crono Seguimiento (nunca por debajo de 0) */
     function rmaCronoElapsedMs(entry) {
-        return Math.max(0, rmaCronoRawMs(entry));
+        return Math.max(0, rmaCronoRawMs(entry) + rmaAjusteMs(entry.rma, 'seguimiento'));
     }
 
     /* Tiempo transcurrido en la fase Tickets (solo informativo; no entra en estadísticas) */
     function rmaTicketElapsedMs(entry) {
         if (entry.fase !== RMA_TICKET_PHASE || typeof entry.ticketStartedAt !== 'number') return 0;
-        return Math.max(0, Date.now() - entry.ticketStartedAt);
+        return Math.max(0, Date.now() - entry.ticketStartedAt + rmaAjusteMs(entry.rma, 'ticket'));
+    }
+
+    /* Tiempo del cronómetro "Espera" (solo RMAs en la fase En espera) + ajuste manual de Contabilidad.
+       Solo informativo: alimenta "Más de 90 días en En espera"; no entra en estadísticas. */
+    function rmaEsperaElapsedMs(entry) {
+        if (entry.fase !== 'En espera' || typeof entry.esperaStartedAt !== 'number') return 0;
+        return Math.max(0, Date.now() - entry.esperaStartedAt + rmaAjusteMs(entry.rma, 'espera'));
     }
 
     /* Cada 24 horas acumuladas cuentan como 1 "día" */
@@ -5310,6 +5346,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const entry = rmaTracking.find(e => e.id === el.dataset.id);
             if (!entry) return;
             el.textContent = rmaCronoFormat(rmaCronoElapsedMs(entry));
+        });
+        document.querySelectorAll('.rma-espera-time[data-id]').forEach(el => {
+            const entry = rmaTracking.find(e => e.id === el.dataset.id);
+            if (!entry) return;
+            el.textContent = rmaCronoFormat(rmaEsperaElapsedMs(entry));
+        });
+        document.querySelectorAll('.dash-ticket-time[data-id]').forEach(el => {
+            const entry = rmaTracking.find(e => e.id === el.dataset.id);
+            if (!entry) return;
+            el.textContent = rmaCronoFormat(rmaTicketElapsedMs(entry));
         });
         document.querySelectorAll('.rma-ticket-time[data-id]').forEach(el => {
             const entry = rmaTracking.find(e => e.id === el.dataset.id);
@@ -5359,6 +5405,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 <i class="fas fa-stopwatch"></i>
                 <span class="rma-crono-time${isRunning ? '' : ' paused'}" data-id="${entry.id}">${esc(rmaCronoFormat(rmaCronoElapsedMs(entry)))}</span>
             </div>`;
+        const esperaCronoHtml = entry.fase === 'En espera'
+            ? `<div class="rma-card-crono" style="color:var(--warning-color);" title="Tiempo en fase En espera (no cuenta en estadísticas)">
+                <i class="fas fa-hourglass-half"></i>
+                <span class="rma-espera-time" data-id="${entry.id}" style="font-family:monospace; font-weight:700; flex:1; word-break:break-all;">${esc(rmaCronoFormat(rmaEsperaElapsedMs(entry)))}</span>
+            </div>`
+            : '';
         const esperaHtml = (RMA_ESPERA_PHASES.includes(entry.fase) && entry.esperaMotivo)
             ? `<div class="rma-card-espera" title="En espera de ${esc(entry.esperaMotivo)}"><i class="fas fa-pause"></i> En espera de ${esc(entry.esperaMotivo)}</div>`
             : '';
@@ -5375,6 +5427,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 <div class="rma-card-actions">${actions}${infoBtn}</div>
                 ${cronoHtml}
+                ${esperaCronoHtml}
                 ${esperaHtml}
             </div>`;
     }
@@ -5727,8 +5780,32 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
 
-        /* Las estadísticas usan solo el tiempo del cronómetro: el ajuste manual de Contabilidad
-           solo afecta al tiempo de espera (listado de +90 días en "En espera"). */
+        /* Ajustes manuales de Contabilidad del crono SEGUIMIENTO: se suman al total del RMA y a sus tramos por fase.
+           El ajuste va al último tramo en Repair (o al último tramo si no hay Repair); si es negativo y ese
+           tramo se queda en 0, el resto se resta de los tramos vecinos. Nunca queda un tiempo negativo.
+           (Los ajustes de los cronos En espera y Ticket NO entran en estadísticas.) */
+        rmaTotals.forEach(t => {
+            const aj = rmaAjusteMs(t.rma, 'seguimiento');
+            if (!aj) return;
+            t.ajusteMs = aj;
+            if (t.durationMs != null) t.durationMs = Math.max(0, t.durationMs + aj);
+            const mine = allPairs.filter(p => p.rma === t.rma);
+            if (!mine.length) return;
+            let pref = -1;
+            mine.forEach((p, i) => { if (p.fase === 'Repair') pref = i; });
+            if (pref < 0) pref = mine.length - 1;
+            if (aj > 0) { mine[pref].durationMs += aj; return; }
+            let rem = -aj;
+            const order = [];
+            for (let i = pref; i >= 0; i--) order.push(i);
+            for (let i = pref + 1; i < mine.length; i++) order.push(i);
+            for (const i of order) {
+                if (rem <= 0) break;
+                const take = Math.min(mine[i].durationMs, rem);
+                mine[i].durationMs -= take;
+                rem -= take;
+            }
+        });
 
         return { allPairs, rmaTotals };
     }
@@ -5927,11 +6004,7 @@ document.addEventListener('DOMContentLoaded', () => {
         /* ── Listado: más de 90 días en "En espera" (los Tickets tienen su propio listado aparte) ── */
         const list30dias = rmaTracking
             .filter(e => e.fase === 'En espera')
-            .map(e => {
-                const d = parseFechaHora(e.fecha);
-                const dias = d ? Math.max(0, now - d.getTime() + rmaAjusteMs(e.rma)) / 86400000 : 0;
-                return { rma: e.rma, dias };
-            })
+            .map(e => ({ rma: e.rma, dias: rmaEsperaElapsedMs(e) / 86400000 }))
             .filter(e => e.dias > 90)
             .sort((a, b) => b.dias - a.dias);
 
@@ -5942,23 +6015,18 @@ document.addEventListener('DOMContentLoaded', () => {
         /* ── Listado: Tickets Abiertos (RMAs marcados con el check "Ticket" en su Info) ── */
         const listTickets = rmaTracking
             .filter(e => e.fase === RMA_TICKET_PHASE)
-            .map(e => {
-                const d = parseFechaHora(e.fecha);
-                const dias = d ? Math.max(0, now - d.getTime()) / 86400000 : 0;
-                return { rma: e.rma, dias };
-            })
-            .sort((a, b) => b.dias - a.dias);
+            .map(e => ({ id: e.id, rma: e.rma, ms: rmaTicketElapsedMs(e) }))
+            .sort((a, b) => b.ms - a.ms);
 
         dashListTicketsEl.innerHTML = listTickets.length
-            ? listTickets.map(e => `<div class="dash-list-item"><span class="dash-item-rma">${esc(e.rma)}</span><span class="dash-item-dias">${Math.floor(e.dias)}d</span></div>`).join('')
+            ? listTickets.map(e => `<div class="dash-list-item"><span class="dash-item-rma">${esc(e.rma)}</span><span class="dash-item-dias dash-ticket-time" data-id="${e.id}">${esc(rmaCronoFormat(e.ms))}</span></div>`).join('')
             : '<div class="dash-list-empty">Ningún RMA con ticket abierto</div>';
 
         /* ── Listado: nuevos equipos en garantía con más de 30 minutos en "En espera" ── */
         const listGarantia = rmaTracking
             .filter(e => e.garantia === 'G' && e.fase === 'En espera' && !e.garantiaDismissed)
             .map(e => {
-                const d = parseFechaHora(e.fecha);
-                const minutos = d ? Math.max(0, now - d.getTime()) / 60000 : 0;
+                const minutos = rmaEsperaElapsedMs(e) / 60000;
                 return { id: e.id, rma: e.rma, minutos };
             })
             .filter(e => e.minutos > 30)
@@ -6182,16 +6250,20 @@ document.addEventListener('DOMContentLoaded', () => {
        momento y funcionan igual con RMAs ya finalizados. */
     function rmaKeyOf(r) { return String(r ?? '').trim().toLowerCase(); }
 
-    function rmaAjusteMs(rma) {
+    /* crono: 'seguimiento' | 'espera' | 'ticket'. Los ajustes antiguos (sin crono indicado) eran de espera. */
+    const RMA_AJUSTE_CRONOS = { seguimiento: 'Seguimiento', espera: 'En espera', ticket: 'Ticket' };
+    function rmaAjusteCronoOf(a) { return (a && RMA_AJUSTE_CRONOS[a.crono]) ? a.crono : 'espera'; }
+
+    function rmaAjusteMs(rma, crono) {
         let arr;
         try { arr = rmaContabilidad.ajustesTiempo; } catch (e) { return 0; }
         if (!Array.isArray(arr) || !arr.length) return 0;
         if (!rmaAjusteMs._c || rmaAjusteMs._c.src !== arr || rmaAjusteMs._c.len !== arr.length) {
             const m = {};
-            arr.forEach(a => { if (a && typeof a.ms === 'number') { const k = rmaKeyOf(a.rma); m[k] = (m[k] || 0) + a.ms; } });
+            arr.forEach(a => { if (a && typeof a.ms === 'number') { const k = rmaAjusteCronoOf(a) + '|' + rmaKeyOf(a.rma); m[k] = (m[k] || 0) + a.ms; } });
             rmaAjusteMs._c = { src: arr, len: arr.length, map: m };
         }
-        return rmaAjusteMs._c.map[rmaKeyOf(rma)] || 0;
+        return rmaAjusteMs._c.map[crono + '|' + rmaKeyOf(rma)] || 0;
     }
 
     /* Repinta todo lo que depende de los tiempos (tablero, dashboard, estadísticas y contabilidad si están abiertas) */
@@ -6491,6 +6563,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const rmaAjusteDiasEl    = document.getElementById('rma-ajuste-dias');
     const rmaAjusteHorasEl   = document.getElementById('rma-ajuste-horas');
     const rmaAjusteMinutosEl = document.getElementById('rma-ajuste-minutos');
+    const rmaAjusteCronoEl   = document.getElementById('rma-ajuste-crono');
     const rmaAjusteAddBtn    = document.getElementById('rma-ajuste-add-btn');
     const rmaAjusteErrorEl   = document.getElementById('rma-ajuste-error');
     const rmaAjusteTbody     = document.getElementById('rma-ajuste-tbody');
@@ -6509,6 +6582,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const list = (rmaContabilidad.ajustesTiempo || []).slice().reverse();   // el más reciente primero
         rmaAjusteTbody.innerHTML = list.map(a => `<tr>
             <td>${esc(a.rma)}</td>
+            <td>${esc(RMA_AJUSTE_CRONOS[rmaAjusteCronoOf(a)])}</td>
             <td style="font-weight:700; color:${a.ms < 0 ? 'var(--danger-color)' : 'var(--success-color)'};">${esc(formatSignedDuration(a.ms))}</td>
             <td>${esc(a.fecha || '')}</td>
             <td>${esc(a.usuario || '')}</td>
@@ -6524,31 +6598,26 @@ document.addEventListener('DOMContentLoaded', () => {
         const rma = rmaAjusteRmaEl.value.trim();
         if (!rma) { rmaAjusteInfoEl.style.display = 'none'; return; }
         const key = rmaKeyOf(rma);
-        const aj = rmaAjusteMs(rma);
-        const ajTxt = aj ? ` · Ajustes acumulados (solo tiempo en espera): <b>${esc(formatSignedDuration(aj))}</b>` : '';
+        const ajParts = Object.keys(RMA_AJUSTE_CRONOS).map(c => ({ c, v: rmaAjusteMs(rma, c) })).filter(x => x.v)
+            .map(x => `${RMA_AJUSTE_CRONOS[x.c]}: <b>${esc(formatSignedDuration(x.v))}</b>`);
+        const ajTxt = ajParts.length ? ` · Ajustes acumulados → ${ajParts.join(' · ')}` : '';
         let html = null;
+        const fmt = (ms) => `<b>${esc(rmaCronoFormat(ms))}</b>`;
 
         const live = rmaTracking.find(e => rmaKeyOf(e.rma) === key);
         if (live) {
-            if (live.fase === 'En espera') {
-                /* En "En espera" el tiempo que importa es el de espera (mismo cálculo que el listado
-                   de +90 días del dashboard), no el cronómetro normal, que está pausado. */
-                const d0 = parseFechaHora(live.fecha);
-                const tEsp = d0 ? Math.max(0, Date.now() - d0.getTime() + aj) : 0;
-                const tCrono = rmaCronoElapsedMs(live);
-                html = `<b>RMA ${esc(live.rma)}</b> · Fase: ${esc(live.fase)} · Tiempo en espera: <b>${esc(rmaCronoFormat(tEsp))}</b> <span style="color:var(--secondary-color); font-size:0.8rem;">(cronómetro normal en pausa: ${esc(rmaCronoFormat(tCrono))})</span>${ajTxt}`;
-            } else {
-                const t = (live.fase === RMA_TICKET_PHASE) ? rmaTicketElapsedMs(live) : rmaCronoElapsedMs(live);
-                const run = (live.cronometro && live.cronometro.running) ? '' : ' (cronómetro en pausa)';
-                html = `<b>RMA ${esc(live.rma)}</b> · Fase: ${esc(live.fase)} · Tiempo actual: <b>${esc(rmaCronoFormat(t))}</b>${(live.fase === RMA_TICKET_PHASE) ? '' : run}${ajTxt}`;
-            }
+            const run = (live.cronometro && live.cronometro.running) ? '' : ' (en pausa)';
+            let tiempos = `Seguimiento${run}: ${fmt(rmaCronoElapsedMs(live))}`;
+            if (live.fase === 'En espera') tiempos += ` · En espera: ${fmt(rmaEsperaElapsedMs(live))}`;
+            if (live.fase === RMA_TICKET_PHASE) tiempos += ` · Ticket: ${fmt(rmaTicketElapsedMs(live))}`;
+            html = `<b>RMA ${esc(live.rma)}</b> · Fase: ${esc(live.fase)} · ${tiempos}${ajTxt}`;
         } else {
             const moves = rmaHistorial.filter(h => rmaKeyOf(h.rma) === key);
             if (moves.length) {
                 const tot = computeRmaStatsData().rmaTotals.find(t => rmaKeyOf(t.rma) === key);
                 const dur = tot && tot.durationMs != null ? rmaCronoFormat(tot.durationMs) : '—';
                 const estado = tot && tot.completed ? 'Finalizado' : 'Fuera del tablero';
-                html = `<b>RMA ${esc(moves[0].rma)}</b> · ${estado} · Tiempo total: <b>${esc(dur)}</b>${ajTxt}`;
+                html = `<b>RMA ${esc(moves[0].rma)}</b> · ${estado} · Tiempo total (Seguimiento): <b>${esc(dur)}</b>${ajTxt}`;
             }
         }
         if (html) {
@@ -6581,7 +6650,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const found = rmaTracking.find(e => rmaKeyOf(e.rma) === key) || rmaHistorial.find(h2 => rmaKeyOf(h2.rma) === key);
         if (!found) return fail('No existe ningún RMA con ese número (ni en seguimiento ni en el historial)');
 
-        const entry = { id: genId('rmaajuste'), rma: String(found.rma), ms: totalMin * 60000, fecha: nowStr(), usuario: currentUserEmail };
+        const entry = { id: genId('rmaajuste'), rma: String(found.rma), ms: totalMin * 60000, crono: RMA_AJUSTE_CRONOS[rmaAjusteCronoEl.value] ? rmaAjusteCronoEl.value : 'seguimiento', fecha: nowStr(), usuario: currentUserEmail };
         rmaAjusteAddBtn.disabled = true;
         try {
             await mutateRmaContabilidad(c => {
@@ -6594,7 +6663,7 @@ document.addEventListener('DOMContentLoaded', () => {
         rmaAjusteDiasEl.value = ''; rmaAjusteHorasEl.value = ''; rmaAjusteMinutosEl.value = '';
         refreshTimeViews();
         updateRmaAjusteInfo();
-        showNotification(`Tiempo de ${entry.rma} ajustado: ${formatSignedDuration(entry.ms)}`);
+        showNotification(`Tiempo (${RMA_AJUSTE_CRONOS[entry.crono]}) de ${entry.rma} ajustado: ${formatSignedDuration(entry.ms)}`);
     }
 
     window.rmaAjusteRemove = async function(id) {
