@@ -2414,7 +2414,7 @@
     </div>
 
     <!-- ══════════════════════════════════════════
-         ELECCIÓN DE GARANTÍA AL PASAR DE PRETEST A "EN ESPERA"
+         ELECCIÓN DE GARANTÍA AL PASAR DE PRETEST A "EN ESPERA" O "FINAL TEST"
     ══════════════════════════════════════════ -->
     <div id="rma-garantia-modal-overlay" class="modal-overlay">
         <div class="modal-box">
@@ -2424,11 +2424,52 @@
             </div>
             <div class="modal-body">
                 <p style="margin:0 0 14px; color: var(--secondary-color); font-size: 0.9rem;">
-                    Indica si el RMA <strong id="rma-garantia-title"></strong> está en garantía o fuera de garantía antes de pasarlo a "En espera". Podrás modificarlo más adelante desde la Info del RMA.
+                    Indica si el RMA <strong id="rma-garantia-title"></strong> está en garantía o fuera de garantía antes de pasarlo a "<span id="rma-garantia-target"></span>". Podrás modificarlo más adelante desde la Info del RMA.
                 </p>
                 <div style="display:flex; gap:10px;">
                     <button class="rma-garantia-choice-btn g" onclick="rmaGarantiaChoose('G')"><i class="fas fa-circle"></i> En garantía (G)</button>
                     <button class="rma-garantia-choice-btn f" onclick="rmaGarantiaChoose('F')"><i class="fas fa-circle"></i> Fuera de garantía (F)</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- ══════════════════════════════════════════
+         MODIFICAR UNA LÍNEA DE "BENEFICIO DE RMAs FINALIZADOS"
+    ══════════════════════════════════════════ -->
+    <div id="rma-beneficio-edit-overlay" class="modal-overlay">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h2><i class="fas fa-pen"></i> Modificar RMA finalizado</h2>
+                <button id="rma-beneficio-edit-close" class="modal-close-btn" title="Cerrar"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <p style="margin:0 0 12px; color:var(--secondary-color); font-size:0.9rem;">RMA <strong id="rma-beneficio-edit-title"></strong></p>
+                <div class="rma-accounting-fields">
+                    <div class="rma-accounting-field">
+                        <label for="rma-beneficio-edit-garantia">Garantía</label>
+                        <select id="rma-beneficio-edit-garantia">
+                            <option value="">Sin asignar</option>
+                            <option value="G">En garantía</option>
+                            <option value="F">Fuera de garantía</option>
+                        </select>
+                    </div>
+                    <div class="rma-accounting-field">
+                        <label for="rma-beneficio-edit-fecha">Fecha de finalización</label>
+                        <input type="datetime-local" id="rma-beneficio-edit-fecha" style="padding:8px 10px; border:1px solid var(--border-color); border-radius:6px;">
+                    </div>
+                    <div class="rma-accounting-field">
+                        <label for="rma-beneficio-edit-precio">Precio aplicado (vacío = precio de referencia)</label>
+                        <div class="rma-accounting-input-wrap">
+                            <input type="number" id="rma-beneficio-edit-precio" min="0" step="0.01" placeholder="0.00">
+                            <span class="rma-accounting-currency">€</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="rma-accounting-save-row">
+                    <button id="rma-beneficio-edit-save" class="inc-add-update-btn"><i class="fas fa-save"></i> Guardar</button>
+                    <span id="rma-beneficio-edit-error" style="color:var(--danger-color); font-size:0.85rem; font-weight:700;"></span>
                 </div>
             </div>
         </div>
@@ -2864,7 +2905,7 @@
 
                 <div class="table-responsive">
                 <table class="stats-table">
-                    <thead><tr><th>RMA</th><th>Garantía</th><th>Finalizado</th><th>Precio aplicado</th></tr></thead>
+                    <thead><tr><th>RMA</th><th>Garantía</th><th>Finalizado</th><th>Precio aplicado</th><th style="width:80px;"></th></tr></thead>
                     <tbody id="rma-accounting-detail-tbody"></tbody>
                 </table>
                 </div>
@@ -3069,6 +3110,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const rmaGarantiaCloseBtn     = document.getElementById('rma-garantia-close-btn');
     const rmaGarantiaTitleEl      = document.getElementById('rma-garantia-title');
     let rmaGarantiaPendingId = null;
+    let rmaGarantiaPendingPhase = 'En espera';
+    const rmaGarantiaTargetEl = document.getElementById('rma-garantia-target');
 
     const rmaMotivoModalOverlay = document.getElementById('rma-motivo-modal-overlay');
     const rmaMotivoCloseBtn     = document.getElementById('rma-motivo-close-btn');
@@ -4945,9 +4988,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (idx === -1) return;
         const entry = rmaTracking[idx];
 
-        /* Al pasar de Pretest a "En espera" hay que indicar si el RMA está en garantía o fuera de garantía */
-        if (newPhase === 'En espera' && entry.fase === 'Pretest') {
-            openRmaGarantiaModal(id);
+        /* Al pasar de Pretest a "En espera" o a "Final Test" hay que indicar si el RMA está en garantía o fuera de garantía */
+        if ((newPhase === 'En espera' || newPhase === 'Final Test') && entry.fase === 'Pretest') {
+            openRmaGarantiaModal(id, newPhase);
             return;
         }
 
@@ -4967,10 +5010,12 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     /* ── Garantía (G) / Fuera de garantía (F) ── */
-    function openRmaGarantiaModal(id) {
+    function openRmaGarantiaModal(id, targetPhase) {
         const entry = rmaTracking.find(e => e.id === id);
         if (!entry) return;
         rmaGarantiaPendingId = id;
+        rmaGarantiaPendingPhase = targetPhase || 'En espera';
+        if (rmaGarantiaTargetEl) rmaGarantiaTargetEl.textContent = rmaGarantiaPendingPhase;
         rmaGarantiaTitleEl.textContent = entry.rma || '';
         rmaGarantiaModalOverlay.classList.add('show');
     }
@@ -4982,10 +5027,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.rmaGarantiaChoose = async function(valor) {
         const id = rmaGarantiaPendingId;
+        const target = rmaGarantiaPendingPhase || 'En espera';
         if (!id) return;
         closeRmaGarantiaModal();
         await setRmaGarantia(id, valor, true);
-        await doRmaMovePhase(id, 'En espera', null);
+        await doRmaMovePhase(id, target, null);
     };
 
     rmaGarantiaCloseBtn.addEventListener('click', closeRmaGarantiaModal);
@@ -6533,7 +6579,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         : '—';
                 const fin = t.end ? `${pad2(t.end.getDate())}/${pad2(t.end.getMonth() + 1)}/${t.end.getFullYear()} ${pad2(t.end.getHours())}:${pad2(t.end.getMinutes())}` : '—';
                 const precioCell = precio != null ? formatEuros(precio) : '—';
-                return `<tr><td>${esc(t.rma)}</td><td>${gCell}</td><td>${fin}</td><td>${precioCell}</td></tr>`;
+                const rmaArg = esc(JSON.stringify(t.rma));
+                return `<tr><td>${esc(t.rma)}</td><td>${gCell}</td><td>${fin}</td><td>${precioCell}</td>
+                    <td style="white-space:nowrap;">
+                        <button class="rma-card-del" title="Modificar" style="color:var(--primary-color);" onclick="rmaBeneficioEdit(${rmaArg})"><i class="fas fa-pen"></i></button>
+                        <button class="rma-card-del" title="Eliminar (también de las estadísticas)" onclick="rmaBeneficioDelete(${rmaArg})"><i class="fas fa-trash"></i></button>
+                    </td></tr>`;
             });
 
         rmaAccountingDetailTbody.innerHTML = rows.join('');
@@ -6703,6 +6754,129 @@ document.addEventListener('DOMContentLoaded', () => {
         renderDashBeneficioChart();
         showNotification('RMAs finalizados borrados de "Beneficio de RMAs finalizados"');
     }
+
+
+    /* ── Modificar / eliminar líneas de "Beneficio de RMAs finalizados" ──
+       El beneficio y las estadísticas salen del historial de movimientos, así que:
+       - Modificar: se cambia en el movimiento "Finalizado" del RMA (garantía, fecha, precio).
+       - Eliminar: se borran todos los movimientos de ese RMA del historial, y por tanto
+         desaparece también de Estadísticas, del gráfico mensual y de "Meses anteriores". */
+    const rmaBenefEditOverlay = document.getElementById('rma-beneficio-edit-overlay');
+    const rmaBenefEditTitle   = document.getElementById('rma-beneficio-edit-title');
+    const rmaBenefEditGar     = document.getElementById('rma-beneficio-edit-garantia');
+    const rmaBenefEditFecha   = document.getElementById('rma-beneficio-edit-fecha');
+    const rmaBenefEditPrecio  = document.getElementById('rma-beneficio-edit-precio');
+    const rmaBenefEditError   = document.getElementById('rma-beneficio-edit-error');
+    let rmaBenefEditRma = null;
+
+    function refreshAfterBeneficioChange() {
+        renderRmaAccountingBeneficio();
+        renderRmaAccountingHistorico();
+        renderDashBeneficioChart();
+        renderDashboard();
+        if (rmaStatsModalOverlay.classList.contains('show')) renderRmaStats();
+        if (rmaHistModalOverlay.classList.contains('show')) renderRmaHistorial();
+    }
+
+    /* Trae el historial más reciente del servidor antes de modificarlo, para no pisar cambios de otros */
+    async function rmaHistorialSyncFresh() {
+        if (window._fbGetRmaHistorialFresh) {
+            const rows = await window._fbGetRmaHistorialFresh();
+            if (rows !== null) { rmaHistorial = Array.isArray(rows) ? rows : []; }
+        }
+    }
+
+    function rmaHistMovesOf(rma) {
+        const key = rmaKeyOf(rma);
+        return rmaHistorial.filter(h => rmaKeyOf(h.rma) === key);
+    }
+
+    function dateToLocalInput(d) {
+        return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    }
+
+    window.rmaBeneficioEdit = function(rma) {
+        const moves = rmaHistMovesOf(rma);
+        if (!moves.length) return;
+        const fin = moves.filter(h => h.fase === 'Finalizado').pop() || moves[moves.length - 1];
+        const g = getRmaGarantiaMap()[rma] || '';
+        const precioFijado = getRmaPrecioFijadoMap()[rma];
+        rmaBenefEditRma = rma;
+        rmaBenefEditTitle.textContent = rma;
+        rmaBenefEditGar.value = g;
+        const d = parseFechaHora(fin.fecha);
+        rmaBenefEditFecha.value = d ? dateToLocalInput(d) : '';
+        rmaBenefEditPrecio.value = (typeof precioFijado === 'number') ? precioFijado : '';
+        rmaBenefEditError.textContent = '';
+        rmaBenefEditOverlay.classList.add('show');
+    };
+
+    function closeRmaBenefEdit() { rmaBenefEditOverlay.classList.remove('show'); rmaBenefEditRma = null; }
+
+    async function saveRmaBenefEdit() {
+        const rma = rmaBenefEditRma;
+        if (!rma) return;
+        rmaBenefEditError.textContent = '';
+        const garantia = rmaBenefEditGar.value;
+        const precio = rmaBenefEditPrecio.value === '' ? null : Math.max(0, parseFloat(rmaBenefEditPrecio.value));
+        if (precio !== null && isNaN(precio)) { rmaBenefEditError.textContent = 'Precio no válido'; return; }
+        const nuevaFecha = rmaBenefEditFecha.value ? new Date(rmaBenefEditFecha.value) : null;
+        if (!nuevaFecha || isNaN(nuevaFecha.getTime())) { rmaBenefEditError.textContent = 'Indica una fecha válida'; return; }
+
+        try {
+            await rmaHistorialSyncFresh();
+            const moves = rmaHistMovesOf(rma);
+            if (!moves.length) { rmaBenefEditError.textContent = 'Este RMA ya no existe en el historial'; return; }
+            let fin = moves.filter(h => h.fase === 'Finalizado').pop();
+            const prev = moves.filter(h => h !== fin && parseFechaHora(h.fecha));
+            const lastPrevDate = prev.length ? Math.max(...prev.map(h => parseFechaHora(h.fecha).getTime())) : null;
+            if (lastPrevDate !== null && nuevaFecha.getTime() < lastPrevDate) {
+                rmaBenefEditError.textContent = 'La fecha no puede ser anterior al último movimiento del RMA';
+                return;
+            }
+            const fechaStr = `${pad2(nuevaFecha.getDate())}/${pad2(nuevaFecha.getMonth() + 1)}/${nuevaFecha.getFullYear()} ${pad2(nuevaFecha.getHours())}:${pad2(nuevaFecha.getMinutes())}`;
+            if (!fin) {
+                /* RMA antiguo que terminó en Final Test sin movimiento "Finalizado": se crea uno */
+                const last = moves[moves.length - 1];
+                fin = { id: genId('rmahist'), rma: last.rma, fase: 'Finalizado', usuario: currentUserEmail || 'desconocido', fecha: fechaStr };
+                if (typeof last.cronoMs === 'number') fin.cronoMs = last.cronoMs;
+                rmaHistorial.push(fin);
+            }
+            fin.fecha = fechaStr;
+            if (garantia === 'G' || garantia === 'F') fin.garantia = garantia; else delete fin.garantia;
+            if (precio !== null) fin.precio = precio; else delete fin.precio;
+            /* La garantía vive también en el tablero mientras el RMA siga en él */
+            rmaTracking.forEach(e => { if (rmaKeyOf(e.rma) === rmaKeyOf(rma)) e.garantia = (garantia === 'G' || garantia === 'F') ? garantia : null; });
+            await saveRmaHistorial();
+            closeRmaBenefEdit();
+            refreshAfterBeneficioChange();
+            showNotification(`RMA ${rma} modificado`);
+        } catch (e) {
+            console.error(e);
+            rmaBenefEditError.textContent = 'No se pudo guardar. Inténtalo de nuevo.';
+        }
+    }
+
+    window.rmaBeneficioDelete = async function(rma) {
+        if (!confirm(`¿Eliminar el RMA ${rma} de "Beneficio de RMAs finalizados"?\n\nTambién se eliminará de las estadísticas (se borran sus movimientos del historial).\n\nEsta acción no se puede deshacer.`)) return;
+        try {
+            await rmaHistorialSyncFresh();
+            const key = rmaKeyOf(rma);
+            rmaHistorial = rmaHistorial.filter(h => rmaKeyOf(h.rma) !== key);
+            rmaHistorialPending = rmaHistorialPending.filter(h => rmaKeyOf(h.rma) !== key);
+            await saveRmaHistorial();
+            refreshAfterBeneficioChange();
+            showNotification(`RMA ${rma} eliminado`);
+        } catch (e) {
+            console.error(e);
+            showNotification('No se pudo eliminar. Inténtalo de nuevo.');
+        }
+    };
+
+    document.getElementById('rma-beneficio-edit-close').addEventListener('click', closeRmaBenefEdit);
+    document.getElementById('rma-beneficio-edit-save').addEventListener('click', saveRmaBenefEdit);
+    rmaBenefEditOverlay.addEventListener('click', (e) => { if (e.target === rmaBenefEditOverlay) closeRmaBenefEdit(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && rmaBenefEditOverlay.classList.contains('show')) closeRmaBenefEdit(); });
 
     rmaAccountingBtn.addEventListener('click', openRmaAccountingModal);
     rmaAccountingCloseBtn.addEventListener('click', closeRmaAccountingModal);
