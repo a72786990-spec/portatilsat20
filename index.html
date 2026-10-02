@@ -2889,7 +2889,7 @@
                 <hr style="border:none; border-top:1px solid var(--border-color); margin:22px 0;">
 
                 <h3 class="stats-section-title"><i class="fas fa-stopwatch"></i> Ajustar tiempo de un RMA</h3>
-                <p style="color:var(--secondary-color); font-size:0.85rem; margin-top:0;">Suma o resta tiempo a un RMA (usa números negativos para restar, p. ej. -1 en horas). El ajuste se aplica en toda la web: cronómetro, dashboard y estadísticas, también para RMAs ya finalizados. El tiempo de un RMA nunca baja de 0. Los ajustes son acumulativos y se pueden quitar de la lista.</p>
+                <p style="color:var(--secondary-color); font-size:0.85rem; margin-top:0;">Suma o resta tiempo a un RMA (usa números negativos para restar, p. ej. -1 en horas). El ajuste solo afecta al tiempo de espera de los RMAs que están en la fase «En espera» (listado «Más de 90 días en En espera»). No modifica el cronómetro, el tiempo medio ni las estadísticas. El tiempo nunca baja de 0. Los ajustes son acumulativos y se pueden quitar de la lista.</p>
                 <div class="rma-accounting-fields">
                     <div class="rma-accounting-field">
                         <label for="rma-ajuste-rma">Nº de RMA</label>
@@ -4874,7 +4874,7 @@ document.addEventListener('DOMContentLoaded', () => {
             info: [], esperaMotivo: null, cronometro: { running: false, accumulatedMs: 0, startedAt: null }
         });
         await saveRmaTracking();
-        await addRmaHistorial(value, 'Pendiente Recibir', currentUserEmail);
+        await addRmaHistorial(value, 'Pendiente Recibir', currentUserEmail, { cronoMs: 0 });
         renderRmaTracking();
     }
 
@@ -5177,8 +5177,11 @@ document.addEventListener('DOMContentLoaded', () => {
             entry.info.push({ id: genId('rmainfo'), fecha: todayISO(), texto: `Motivo cambio a "${newPhase}": ${motivo}`, usuario: currentUserEmail });
         }
 
+        /* Tiempo de cronómetro activo acumulado en este momento (sin pausas/esperas): las
+           estadísticas usan solo este dato, no la fecha de entrada/salida. */
+        const cronoMsNow = rmaCronoRawMs(entry);
         await saveRmaTracking();
-        await addRmaHistorial(rmaName, newPhase, currentUserEmail);
+        await addRmaHistorial(rmaName, newPhase, currentUserEmail, { cronoMs: cronoMsNow });
         renderRmaTracking();
         showNotification(`RMA ${rmaName} movido a "${newPhase}"`);
 
@@ -5252,6 +5255,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const entry = rmaTracking[idx];
         if (entry.fase !== 'Final Test') return;
         if (!confirm(`¿Finalizar el RMA ${entry.rma}? Pasará al historial como Finalizado.`)) return;
+        const cronoMsFinal = rmaCronoRawMs(entry);
         rmaTracking.splice(idx, 1);
         await saveRmaTracking();
         /* Se guarda la garantía junto al movimiento "Finalizado" porque el RMA
@@ -5260,7 +5264,7 @@ document.addEventListener('DOMContentLoaded', () => {
            Estadísticas la necesitan aunque el RMA ya no esté en curso). */
         const precioFijado = entry.garantia === 'G' ? rmaContabilidad.precioGarantia
                            : entry.garantia === 'F' ? rmaContabilidad.precioFueraGarantia : null;
-        await addRmaHistorial(entry.rma, 'Finalizado', currentUserEmail, { garantia: entry.garantia || null, precio: precioFijado });
+        await addRmaHistorial(entry.rma, 'Finalizado', currentUserEmail, { garantia: entry.garantia || null, precio: precioFijado, cronoMs: cronoMsFinal });
         renderRmaTracking();
         showNotification(`RMA ${entry.rma} finalizado`);
     };
@@ -5274,15 +5278,16 @@ document.addEventListener('DOMContentLoaded', () => {
         return ms;
     }
 
-    /* Tiempo mostrado = cronometrado + ajuste manual de Contabilidad (nunca por debajo de 0) */
+    /* Tiempo mostrado = solo el cronómetro (el ajuste manual de Contabilidad NO se aplica aquí:
+       solo afecta al tiempo de espera de los RMAs en "En espera") */
     function rmaCronoElapsedMs(entry) {
-        return Math.max(0, rmaCronoRawMs(entry) + rmaAjusteMs(entry.rma));
+        return Math.max(0, rmaCronoRawMs(entry));
     }
 
     /* Tiempo transcurrido en la fase Tickets (solo informativo; no entra en estadísticas) */
     function rmaTicketElapsedMs(entry) {
         if (entry.fase !== RMA_TICKET_PHASE || typeof entry.ticketStartedAt !== 'number') return 0;
-        return Math.max(0, Date.now() - entry.ticketStartedAt + rmaAjusteMs(entry.rma));
+        return Math.max(0, Date.now() - entry.ticketStartedAt);
     }
 
     /* Cada 24 horas acumuladas cuentan como 1 "día" */
@@ -5319,7 +5324,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (entry.fase === 'Pendiente Recibir') {
             actions = `<button class="rma-move-btn to-pretest" onclick="rmaMovePhase('${entry.id}','Pretest')">→ Pretest</button>`;
         } else if (entry.fase === 'Pretest') {
-            actions = `<button class="rma-move-btn to-espera" onclick="rmaMovePhase('${entry.id}','En espera')">→ En espera</button>`;
+            actions = `<button class="rma-move-btn to-espera" onclick="rmaMovePhase('${entry.id}','En espera')">→ En espera</button>
+                       <button class="rma-move-btn to-final" onclick="rmaMovePhase('${entry.id}','Final Test')">→ Final Test</button>`;
         } else if (entry.fase === 'En espera') {
             actions = `<button class="rma-move-btn to-pretest" onclick="rmaMovePhase('${entry.id}','Pretest')">← Pretest</button>
                        <button class="rma-move-btn to-repair" onclick="rmaMovePhase('${entry.id}','Repair')">→ Repair</button>`;
@@ -5693,9 +5699,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     const start = parseFechaHora(moves[i].fecha);
                     const end   = parseFechaHora(moves[i + 1].fecha);
                     if (start && end && end >= start) {
+                        /* Tiempo = solo lo que ha avanzado el cronómetro en ese tramo (sin pausas ni
+                           esperas). Movimientos antiguos sin dato de cronómetro: se usa la diferencia de fechas. */
+                        const c0 = moves[i].cronoMs, c1 = moves[i + 1].cronoMs;
+                        const durationMs = (typeof c0 === 'number' && typeof c1 === 'number')
+                            ? Math.max(0, c1 - c0) : (end - start);
                         allPairs.push({
                             rma, fase: moves[i].fase, tecnico: moves[i].usuario || 'Desconocido',
-                            start, end, durationMs: end - start
+                            start, end, durationMs
                         });
                     }
                 }
@@ -5707,38 +5718,17 @@ document.addEventListener('DOMContentLoaded', () => {
                Se admite Final Test como final solo para RMAs antiguos ya retirados del tablero. */
             const enTablero = rmaTracking.some(e => String(e.rma) === String(rma));
             const completed = lastMove.fase === 'Finalizado' || (lastMove.fase === 'Final Test' && !enTablero);
+            /* Duración total = tiempo acumulado por el cronómetro del RMA (solo mientras estuvo activo). */
+            const durCrono = (typeof lastMove.cronoMs === 'number') ? lastMove.cronoMs : null;
             rmaTotals.push({
                 rma, start: firstDate, end: lastDate,
-                durationMs: (firstDate && lastDate) ? (lastDate - firstDate) : null,
+                durationMs: durCrono != null ? durCrono : ((firstDate && lastDate) ? (lastDate - firstDate) : null),
                 completed, ultimaFase: lastMove.fase, technicians
             });
         });
 
-        /* Ajustes manuales de tiempo (Contabilidad RMA): se suman al total del RMA y a sus tramos por fase.
-           El ajuste va al último tramo en Repair (o al último tramo si no hay Repair); si es negativo y ese
-           tramo se queda en 0, el resto se resta de los tramos vecinos. Nunca queda un tiempo negativo. */
-        rmaTotals.forEach(t => {
-            const aj = rmaAjusteMs(t.rma);
-            if (!aj) return;
-            t.ajusteMs = aj;
-            if (t.durationMs != null) t.durationMs = Math.max(0, t.durationMs + aj);
-            const mine = allPairs.filter(p => p.rma === t.rma);
-            if (!mine.length) return;
-            let pref = -1;
-            mine.forEach((p, i) => { if (p.fase === 'Repair') pref = i; });
-            if (pref < 0) pref = mine.length - 1;
-            if (aj > 0) { mine[pref].durationMs += aj; return; }
-            let rem = -aj;
-            const order = [];
-            for (let i = pref; i >= 0; i--) order.push(i);
-            for (let i = pref + 1; i < mine.length; i++) order.push(i);
-            for (const i of order) {
-                if (rem <= 0) break;
-                const take = Math.min(mine[i].durationMs, rem);
-                mine[i].durationMs -= take;
-                rem -= take;
-            }
-        });
+        /* Las estadísticas usan solo el tiempo del cronómetro: el ajuste manual de Contabilidad
+           solo afecta al tiempo de espera (listado de +90 días en "En espera"). */
 
         return { allPairs, rmaTotals };
     }
@@ -5899,20 +5889,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const completedThisMonth = rmaTotals.filter(t => t.completed && t.durationMs != null && t.end && t.end >= STATS_START_DATE && isInCurrentMonth(t.end, monthRange));
         dashFinalizadosEl.textContent = completedThisMonth.length;
 
-        /* ── Tiempo medio (mes actual): combina el tiempo cronometrado real de
-           cada RMA que hay ahora mismo en seguimiento (activos, incluidos los
-           que están en Final Test) CON la duración real (Pretest → Final Test)
-           de los equipos que ya se han finalizado este mes, tomada de las
-           estadísticas de equipos finalizados. Así el tiempo medio también
-           refleja los equipos que ya salieron del seguimiento y no solo los
-           que siguen activos en este momento. ── */
-        const activeDurations = rmaTracking.map(e => rmaCronoElapsedMs(e));
+        /* ── Tiempo medio (mes actual): media del cronómetro (sin pausas ni esperas) de los
+           equipos FINALIZADOS este mes. Al finalizar un RMA se guarda su tiempo de cronómetro;
+           aquí se suman todos los de este mes y se divide entre los finalizados del mes.
+           No cuentan los RMAs en curso ni los pendientes de recibir. ── */
         const finalizadosDurations = completedThisMonth.map(t => t.durationMs);
-        const allDurations = activeDurations.concat(finalizadosDurations);
 
-        if (allDurations.length) {
-            const totalMs = allDurations.reduce((s, d) => s + d, 0);
-            dashAvgTimeEl.textContent = formatDuration(totalMs / allDurations.length);
+        if (finalizadosDurations.length) {
+            const totalMs = finalizadosDurations.reduce((s, d) => s + d, 0);
+            dashAvgTimeEl.textContent = formatDuration(totalMs / finalizadosDurations.length);
         } else {
             dashAvgTimeEl.textContent = '—';
         }
@@ -5929,7 +5914,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .filter(e => e.fase !== 'Pendiente Recibir' && e.fase !== 'En espera' && e.fase !== RMA_TICKET_PHASE)
             .map(e => {
                 const d = parseFechaHora(e.fecha);
-                const dias = d ? Math.max(0, now - d.getTime() + rmaAjusteMs(e.rma)) / 86400000 : 0;
+                const dias = d ? Math.max(0, now - d.getTime()) / 86400000 : 0;
                 return { rma: e.rma, fase: e.fase, dias };
             })
             .filter(e => e.dias > 2)
@@ -5959,7 +5944,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .filter(e => e.fase === RMA_TICKET_PHASE)
             .map(e => {
                 const d = parseFechaHora(e.fecha);
-                const dias = d ? Math.max(0, now - d.getTime() + rmaAjusteMs(e.rma)) / 86400000 : 0;
+                const dias = d ? Math.max(0, now - d.getTime()) / 86400000 : 0;
                 return { rma: e.rma, dias };
             })
             .sort((a, b) => b.dias - a.dias);
@@ -5973,7 +5958,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .filter(e => e.garantia === 'G' && e.fase === 'En espera' && !e.garantiaDismissed)
             .map(e => {
                 const d = parseFechaHora(e.fecha);
-                const minutos = d ? Math.max(0, now - d.getTime() + rmaAjusteMs(e.rma)) / 60000 : 0;
+                const minutos = d ? Math.max(0, now - d.getTime()) / 60000 : 0;
                 return { id: e.id, rma: e.rma, minutos };
             })
             .filter(e => e.minutos > 30)
@@ -6122,7 +6107,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (completedTotals.length) {
             const avgMs = completedTotals.reduce((s, t) => s + t.durationMs, 0) / completedTotals.length;
             statsAvgRepairEl.textContent = formatDuration(avgMs);
-            statsAvgRepairSubEl.textContent = `Basado en ${completedTotals.length} RMA${completedTotals.length !== 1 ? 's' : ''} finalizado${completedTotals.length !== 1 ? 's' : ''} (Pretest → Final Test)`;
+            statsAvgRepairSubEl.textContent = `Basado en ${completedTotals.length} RMA${completedTotals.length !== 1 ? 's' : ''} finalizado${completedTotals.length !== 1 ? 's' : ''} · tiempo de cronómetro activo`;
         } else {
             statsAvgRepairEl.textContent = '—';
             statsAvgRepairSubEl.textContent = 'No hay RMAs finalizados con los filtros aplicados';
@@ -6540,7 +6525,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!rma) { rmaAjusteInfoEl.style.display = 'none'; return; }
         const key = rmaKeyOf(rma);
         const aj = rmaAjusteMs(rma);
-        const ajTxt = aj ? ` · Ajustes acumulados: <b>${esc(formatSignedDuration(aj))}</b>` : '';
+        const ajTxt = aj ? ` · Ajustes acumulados (solo tiempo en espera): <b>${esc(formatSignedDuration(aj))}</b>` : '';
         let html = null;
 
         const live = rmaTracking.find(e => rmaKeyOf(e.rma) === key);
