@@ -250,7 +250,7 @@
                 await batch.commit();
             }
         }
-        const ENCRYPTED_SINGLE_DOCS = ['transporte', 'incidencias', 'incidencias_historial', 'rma_tracking', 'rma_historial', 'rma_contabilidad', 'user_roles', 'inventario', 'total_rma'];
+        const ENCRYPTED_SINGLE_DOCS = ['transporte', 'incidencias', 'incidencias_historial', 'rma_tracking', 'rma_historial', 'rma_contabilidad', 'user_roles', 'inventario', 'total_rma', 'ucs'];
 
         const cryptoChangeImpl = async (currentPass, newPass, remember, onProgress, ph) => {
             if (!cryptoSupported()) throw new Error('nocrypto');
@@ -864,6 +864,33 @@
         };
 
         window._fbListenInventario = rowsListen('inventario', 'inventario');
+
+        /* ── UCS (preparación de reparaciones): documento cifrado ucs/entries { rows } ──
+           Mismo cifrado AES-256-GCM y misma clave que el resto de datos. */
+        window._fbListenUcs = rowsListen('ucs', 'ucs');
+        /* Lee-modifica-escribe en una transacción: fn recibe un Map id→equipo y lo modifica in situ */
+        window._fbMutateUcs = async (fn) => {
+            const aad = 'ucs/entries';
+            try {
+                let out = null;
+                await runTransaction(db, async (tx) => {
+                    const ref = doc(db, 'ucs', 'entries');
+                    const snap = await tx.get(ref);
+                    const base = snap.exists() ? (((await decodeDoc(snap.data(), aad)) || {}).rows || []) : [];
+                    const map = new Map();
+                    base.forEach(r => { if (r && r.id) map.set(String(r.id), r); });
+                    fn(map);
+                    const rows = [...map.values()];
+                    tx.set(ref, await encodeDoc({ rows }, aad));
+                    out = rows;
+                });
+                window._fbLoadOk['ucs'] = true;
+                return out;
+            } catch (e) {
+                console.error('Firebase mutate ucs error:', e);
+                return null;
+            }
+        };
 
         /* ── AVISO DE NUEVA VERSIÓN (config/version: solo un número, sin datos sensibles) ── */
         window._fbPublishVersion = async (v) => { await setDoc(doc(db, 'config', 'version'), { v }); };
@@ -1570,8 +1597,45 @@
            VENTANA UCS (app embebida)
         ══════════════════════════════════════════ */
         #ucs-modal-overlay .modal-box { max-width: 1300px; width: 96%; height: 92vh; max-height: 92vh; }
-        #ucs-modal-overlay .modal-body { padding: 0; flex: 1; min-height: 0; }
-        #ucs-frame { width: 100%; height: 100%; border: none; display: block; }
+        #ucs-modal-overlay .modal-body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; flex: 1; }
+        #ucs-parts-overlay { z-index: 2100; }
+        #ucs-parts-overlay .modal-box { max-width: 900px; }
+        .ucs-ov .ucs-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+        .ucs-ov .ucs-file-btn { background: #3498db; color: #fff; padding: 9px 16px; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 0.9rem; transition: opacity 0.2s; }
+        .ucs-ov .ucs-file-btn.orange { background: #e67e22; }
+        .ucs-ov .ucs-file-btn:hover { opacity: 0.9; }
+        .ucs-ov input[type="file"] { display: none; }
+        .ucs-ov .ucs-status { font-weight: 600; font-size: 0.88rem; color: #555; }
+        .ucs-ov .ucs-search-row { display: flex; gap: 10px; margin-bottom: 12px; }
+        #ucs-search { flex: 1; min-width: 0; padding: 10px; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 0.95em; box-sizing: border-box; }
+        .ucs-ov .ucs-print-btn { background: #34495e; color: #fff; border: none; padding: 0 18px; border-radius: 5px; font-weight: bold; cursor: pointer; }
+        .ucs-ov .ucs-table-wrap { flex: 1; min-height: 0; overflow: auto; border: 1px solid #e0e0e0; border-radius: 8px; background: #fff; }
+        #ucs-table, .ucs-ov .ucs-mtable { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9em; }
+        #ucs-table th, #ucs-table td { padding: 11px 14px; border-bottom: 1px solid #e0e0e0; white-space: nowrap; }
+        #ucs-table th { background: #34495e; color: #fff; position: sticky; top: 0; z-index: 2; }
+        #ucs-table tr.ucs-allocated { background: #d5f5e3; }
+        #ucs-table tr.ucs-allocated:hover { background: #c3f0cf; }
+        #ucs-table tr.ucs-pending { background: #fdebd0; }
+        #ucs-table tr.ucs-pending:hover { background: #fbdcb3; }
+        .ucs-ov .ucs-mtable { margin-top: 12px; }
+        .ucs-ov .ucs-mtable th { background: #7f8c8d; color: #fff; }
+        .ucs-ov .ucs-mtable th, .ucs-ov .ucs-mtable td { padding: 10px; border: 1px solid #e0e0e0; }
+        .ucs-ov .ucs-btn { padding: 6px 12px; margin-right: 5px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.85em; color: #fff; font-family: inherit; }
+        .ucs-ov .ucs-btn:hover { opacity: 0.9; }
+        .ucs-ov .ucs-view { background: #2c3e50; }
+        .ucs-ov .ucs-del { background: #c0392b; }
+        .ucs-ov .ucs-red { background: #e74c3c; }
+        .ucs-ov .ucs-green { background: #2ecc71; }
+        .ucs-ov .ucs-purple { background: #9b59b6; }
+        .ucs-ov .ucs-blue { background: #3498db; }
+        .ucs-ov .ucs-grey { background: #95a5a6; }
+        .ucs-ov .ucs-badge-repair { background: #e74c3c; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.9em; font-weight: bold; }
+        .ucs-ov .ucs-fase { color: #fff; padding: 3px 9px; border-radius: 10px; font-size: 0.85em; font-weight: bold; }
+        .ucs-ov .ucs-fase-na { color: #94a3b8; font-style: italic; font-size: 0.88em; }
+        .ucs-ov .ucs-loc { background: #34495e; color: #fff; padding: 3px 6px; border-radius: 4px; font-weight: bold; }
+        .ucs-ov .ucs-noloc { background: #94a3b8; color: #fff; padding: 3px 6px; border-radius: 4px; font-style: italic; }
+        .ucs-ov textarea { width: 100%; height: 180px; padding: 12px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; font-family: monospace; background: #fafafa; }
+        .rma-garantia-dot.na { background: #cbd5e1; }
 
         @media (max-width: 900px) {
             .rma-board { grid-template-columns: 1fr 1fr; }
@@ -2589,15 +2653,44 @@
     <!-- ══════════════════════════════════════════
          VENTANA UCS (app embebida)
     ══════════════════════════════════════════ -->
-    <div id="ucs-modal-overlay" class="modal-overlay">
+    <div id="ucs-modal-overlay" class="modal-overlay ucs-ov">
         <div class="modal-box">
             <div class="modal-header">
-                <h2><i class="fas fa-tools"></i> UCS</h2>
+                <h2><i class="fas fa-tools"></i> UCS - Preparación de reparaciones</h2>
                 <button id="ucs-close-btn" class="modal-close-btn" title="Cerrar"><i class="fas fa-times"></i></button>
             </div>
             <div class="modal-body">
-                <iframe id="ucs-frame" title="Aplicación UCS"></iframe>
+                <div class="ucs-toolbar">
+                    <label for="ucs-update-file" class="ucs-file-btn">📥 Carga Repair</label>
+                    <input type="file" id="ucs-update-file" accept=".xlsx, .xls, .csv">
+                    <label for="ucs-parts-file" class="ucs-file-btn orange">🛠️ Cargar Piezas (KBO)</label>
+                    <input type="file" id="ucs-parts-file" accept=".xlsx, .xls, .csv">
+                    <span id="ucs-status" class="ucs-status"></span>
+                </div>
+                <div class="ucs-search-row">
+                    <input type="text" id="ucs-search" placeholder="🔍 Buscar RMA o Número de Serie en la lista principal...">
+                    <button class="ucs-print-btn" id="ucs-print-btn">🖨️ Imprimir Equipos</button>
+                </div>
+                <div class="ucs-table-wrap">
+                    <table id="ucs-table">
+                        <thead><tr>
+                            <th>Rma No</th><th>Product SN</th><th>Product Type</th><th>Item Status</th><th>Fase</th><th>Piezas</th>
+                        </tr></thead>
+                        <tbody id="ucs-tbody"></tbody>
+                    </table>
+                </div>
             </div>
+        </div>
+    </div>
+
+    <!-- UCS: piezas de un equipo -->
+    <div id="ucs-parts-overlay" class="modal-overlay ucs-ov">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h2 id="ucs-parts-title">Piezas Registradas</h2>
+                <button id="ucs-parts-close" class="modal-close-btn" title="Cerrar"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body" id="ucs-parts-body" style="overflow-y:auto;"></div>
         </div>
     </div>
 
@@ -7331,22 +7424,6 @@ document.addEventListener('DOMContentLoaded', () => {
     delegNewPhone.addEventListener('keydown', (e) => { if (e.key === 'Enter') delegNewName.focus(); });
     delegSearch.addEventListener('input', renderDelegRows);
 
-    /* ════════════════════════════════════════
-       VENTANA UCS (app embebida)
-    ════════════════════════════════════════ */
-    const ucsButton       = document.getElementById('ucs-button');
-    const ucsModalOverlay = document.getElementById('ucs-modal-overlay');
-    const ucsCloseBtn     = document.getElementById('ucs-close-btn');
-    const ucsFrame        = document.getElementById('ucs-frame');
-
-    ucsButton.addEventListener('click', () => {
-        if (!ucsFrame.getAttribute('src')) ucsFrame.setAttribute('src', 'UCS.html');
-        ucsModalOverlay.classList.add('show');
-    });
-    ucsCloseBtn.addEventListener('click', () => ucsModalOverlay.classList.remove('show'));
-    ucsModalOverlay.addEventListener('click', (e) => { if (e.target === ucsModalOverlay) ucsModalOverlay.classList.remove('show'); });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ucsModalOverlay.classList.contains('show')) ucsModalOverlay.classList.remove('show'); });
-
     settingsButton.addEventListener('click', () => {
         settingsModalOverlay.classList.add('show');
         settingsError.textContent = '';
@@ -8497,5 +8574,383 @@ document.addEventListener('DOMContentLoaded', () => {
         else if (b.dataset.act === 'del') del(b.dataset.key);
     });
 </script>
+<!-- ══════════════════════════════════════════
+     UCS (Preparación de reparaciones): lógica portada de UCS.html, ahora embebida.
+     Los datos se guardan SOLO en la base de PortatilSat (ucs/entries), cifrados con
+     AES-256-GCM (la misma clave que el resto de datos). Ya no se usa Firebase "proveedores".
+     Cruza cada RMA con el Seguimiento RMA (rma_tracking) para mostrar garantía y fase.
+══════════════════════════════════════════ -->
+<script type="module">
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+    const ovl  = $('ucs-modal-overlay');
+    const pOvl = $('ucs-parts-overlay');
+    const isOpen      = () => ovl.classList.contains('show');
+    const isPartsOpen = () => pOvl.classList.contains('show');
+
+    const PHASE_COLORS = {
+        'Pendiente Recibir': '#8a6d3b', 'Pretest': '#6c757d', 'En espera': '#fd7e14',
+        'Repair': '#6f42c1', 'Final Test': '#28a745', 'Tickets': '#e83e8c', 'Transfer': '#17a2b8'
+    };
+    const rmaKey = (r) => String(r ?? '').trim().toLowerCase();
+
+    let ucsData = {};          // id → equipo { id, 'Rma No', 'Product SN', 'Product Type', 'Item Status', parts[] }
+    let invLoc = {};           // Org PN → ubicación (inventario de la app)
+    let trackMap = new Map();  // rma (minúsculas) → entrada del Seguimiento RMA
+    let unsubUcs = null, unsubInv = null, unsubTrack = null;
+    let currentKey = null;
+
+    const setStatus = (msg, color) => { const el = $('ucs-status'); if (el) { el.textContent = msg; el.style.color = color || '#555'; } };
+    const statusOk = () => setStatus(`🔒 UCS cifrado en PortatilSat (${Object.keys(ucsData).length} equipos).`, '#27ae60');
+    const cryptoOk = () => !!(window._fbCryptoReady && window._fbCryptoReady() && window._fbListenUcs && window._fbMutateUcs);
+
+    const dropUnsub = (u) => { try { if (u) u(); } catch (e) {} };
+
+    function subscribe() {
+        if (!cryptoOk()) { setStatus('🔒 Cifrado bloqueado: no se puede cargar UCS.', '#b45309'); return false; }
+        if (!unsubUcs) {
+            unsubUcs = window._fbListenUcs(applyRows, () => {
+                setStatus('⚠️ No se pudo cargar UCS cifrado (revisa las reglas de Firestore de PortatilSat para la colección "ucs").', '#c0392b');
+                const u = unsubUcs; unsubUcs = null; dropUnsub(u);
+            });
+        }
+        if (!unsubInv && window._fbListenInventario) {
+            unsubInv = window._fbListenInventario((rows) => {
+                invLoc = {};
+                (rows || []).forEach(r => { const pn = String((r && r.pn) ?? '').trim(); if (pn) invLoc[pn] = String(r.location || ''); });
+                refresh();
+            }, () => { const u = unsubInv; unsubInv = null; dropUnsub(u); });
+        }
+        if (!unsubTrack && window._fbListenRmaTracking) {
+            unsubTrack = window._fbListenRmaTracking((rows) => {
+                trackMap = new Map();
+                (rows || []).forEach(e => { const k = rmaKey(e && e.rma); if (k && !trackMap.has(k)) trackMap.set(k, e); });
+                refresh();
+            }, () => { const u = unsubTrack; unsubTrack = null; dropUnsub(u); });
+        }
+        return true;
+    }
+
+    function applyRows(rows) {
+        ucsData = {};
+        (rows || []).forEach(r => { if (r && r.id) ucsData[r.id] = r; });
+        statusOk();
+        refresh();
+    }
+    function refresh() {
+        if (isOpen()) render();
+        if (isPartsOpen()) renderParts();
+    }
+
+    /* Lectura + cambio + escritura en UNA transacción: no se pisan cambios de otros usuarios */
+    async function mutate(fn) {
+        if (!cryptoOk()) { alert('El cifrado está bloqueado: no se puede guardar UCS.'); return false; }
+        const rows = await window._fbMutateUcs(fn);
+        if (!rows) { alert('No se pudo guardar UCS cifrado. Revisa la conexión y las reglas de Firestore. No se ha guardado nada.'); return false; }
+        applyRows(rows);
+        return true;
+    }
+
+    /* ── Cotejo con Seguimiento RMA ── */
+    const garText = (t) => !t ? 'Sin seguimiento' : t.garantia === 'G' ? 'En garantía' : t.garantia === 'F' ? 'Fuera de garantía' : 'Garantía sin definir';
+    function garDot(t) {
+        if (t && t.garantia === 'G') return '<span class="rma-garantia-dot g" title="En garantía"></span>';
+        if (t && t.garantia === 'F') return '<span class="rma-garantia-dot f" title="Fuera de garantía"></span>';
+        return `<span class="rma-garantia-dot na" title="${t ? 'Garantía sin definir en Seguimiento RMA' : 'RMA no encontrado en Seguimiento RMA'}"></span>`;
+    }
+    function faseCell(t) {
+        if (!t) return '<span class="ucs-fase-na">Sin seguimiento</span>';
+        const color = PHASE_COLORS[t.fase] || '#6c757d';
+        const extra = t.esperaMotivo ? ` title="En espera de ${esc(t.esperaMotivo)}"` : '';
+        return `<span class="ucs-fase" style="background:${color};"${extra}>${esc(t.fase || '—')}</span>`;
+    }
+
+    /* ── Tabla principal ── */
+    function render() {
+        const tbody = $('ucs-tbody');
+        const q = $('ucs-search').value.trim().toLowerCase();
+        tbody.innerHTML = '';
+        Object.keys(ucsData).forEach(key => {
+            const row = ucsData[key];
+            const rma = String(row['Rma No'] ?? '');
+            const sn  = String(row['Product SN'] ?? '');
+            if (!rma.toLowerCase().includes(q) && !sn.toLowerCase().includes(q)) return;
+            const t = trackMap.get(rmaKey(rma));
+            const parts = row.parts || [];
+            const allAllocated = parts.length > 0 && parts.every(p => String(p.status || '').trim().toUpperCase() === 'ALLOCATED');
+            const status = String(row['Item Status'] ?? '');
+            const tr = document.createElement('tr');
+            tr.className = allAllocated ? 'ucs-allocated' : 'ucs-pending';
+            tr.innerHTML = `
+                <td>${garDot(t)}${esc(rma)}</td>
+                <td>${esc(sn)}</td>
+                <td>${esc(row['Product Type'] ?? '')}</td>
+                <td>${status.toUpperCase() === 'REPAIR' ? `<span class="ucs-badge-repair">${esc(status)}</span>` : esc(status)}</td>
+                <td>${faseCell(t)}</td>
+                <td>
+                    <button class="ucs-btn ucs-view" data-act="view" data-key="${esc(key)}">👁️ Ver Piezas (${parts.length})</button>
+                    <button class="ucs-btn ucs-del" data-act="delrow" data-key="${esc(key)}" title="Borrar esta línea">🗑️ Borrar</button>
+                </td>`;
+            tbody.appendChild(tr);
+        });
+    }
+
+    /* ── Modal de piezas ── */
+    function openParts(key) { currentKey = key; pOvl.classList.add('show'); renderParts(); }
+    function closeParts()   { pOvl.classList.remove('show'); currentKey = null; }
+
+    function renderParts() {
+        const eq = currentKey ? ucsData[currentKey] : null;
+        if (!eq) { if (isPartsOpen()) closeParts(); return; }
+        const body = $('ucs-parts-body');
+        const t = trackMap.get(rmaKey(eq['Rma No']));
+        $('ucs-parts-title').innerHTML = `${garDot(t)}Piezas Registradas - RMA No: ${esc(eq['Rma No'])}`;
+        const parts = eq.parts || [];
+
+        if (parts.length === 0) {
+            const prev = $('ucs-manual-input');
+            const keep = prev ? prev.value : '';
+            body.innerHTML = `
+                <div style="padding:10px 0;">
+                    <p style="margin:0 0 10px 0; font-weight:bold; color:#e67e22;">⚠️ No hay piezas vinculadas. Pega el bloque de texto del informe a continuación:</p>
+                    <textarea id="ucs-manual-input" placeholder="Pega el bloque aquí...&#10;Ejemplo:&#10;Action&#10;1&#10;1&#10;ALLOCATED&#10;WEB_APPLY&#10;Y&#10;CID&#10;Manually&#10;18200-16001600&#10;OLED 16' WUXGA..."></textarea>
+                    <div style="margin-top:15px; display:flex; gap:10px; flex-wrap:wrap;">
+                        <button class="ucs-btn ucs-blue" style="padding:10px 16px;" data-act="parse">⚙️ Procesar y Cargar Piezas</button>
+                        <button class="ucs-btn ucs-grey" style="padding:10px 16px;" data-act="complete">🚀 Forzar Listo (Sin Piezas)</button>
+                    </div>
+                </div>`;
+            $('ucs-manual-input').value = keep;
+            return;
+        }
+        const allChecked = parts.every(p => p.checked === true);
+        let h = `<div style="margin-bottom:15px; overflow:hidden;">
+                    ${allChecked ? '<button class="ucs-btn ucs-green" style="padding:8px 20px; float:left;" data-act="complete">🚀 Marcar como Listo</button>' : ''}
+                    <button class="ucs-btn ucs-purple" style="padding:8px 16px; float:right;" data-act="print">🖨️ Imprimir Listado</button>
+                 </div>
+                 <div style="overflow-x:auto;"><table class="ucs-mtable"><thead><tr>
+                    <th>NEW_PART_NO (Org PN)</th><th>NEW_PART_DESC</th><th>Ubicación</th><th style="text-align:center;">Recepción</th>
+                 </tr></thead><tbody>`;
+        parts.forEach((p, i) => {
+            const loc = invLoc[p.pn];
+            const locHtml = (loc && loc.trim() !== '') ? `<span class="ucs-loc">${esc(loc)}</span>` : '<span class="ucs-noloc">Sin ubicar</span>';
+            h += `<tr>
+                <td style="font-family:monospace; font-weight:bold; color:#2980b9;">${esc(p.pn)}</td>
+                <td>${esc(p.desc)}</td>
+                <td>${locHtml}</td>
+                <td style="text-align:center;">
+                    <button class="ucs-btn ${p.checked ? 'ucs-green' : 'ucs-red'}" data-act="toggle" data-idx="${i}">${p.checked ? '✓ Recibido' : '✗ Pendiente'}</button>
+                </td></tr>`;
+        });
+        h += '</tbody></table></div>';
+        body.innerHTML = h;
+    }
+
+    async function togglePart(idx) {
+        const key = currentKey;
+        await mutate(map => { const eq = map.get(key); if (eq && eq.parts && eq.parts[idx]) eq.parts[idx].checked = !eq.parts[idx].checked; });
+    }
+
+    async function completeEquipment() {
+        if (!confirm('¿Marcar este equipo como listo? Se quitará de la pantalla principal.')) return;
+        const key = currentKey;
+        if (await mutate(map => map.delete(key))) closeParts();
+    }
+
+    async function deleteEquipment(key) {
+        const eq = ucsData[key];
+        if (!confirm(`¿Borrar manualmente la línea del RMA ${eq ? eq['Rma No'] : key}?`)) return;
+        await mutate(map => map.delete(key));
+    }
+
+    async function parseManualBlocks() {
+        const raw = $('ucs-manual-input').value;
+        if (!raw.trim()) return alert('El cuadro de texto está vacío.');
+        const lines = raw.split('\n').map(l => l.trim());
+        const parsed = [];
+        const statusTokens = new Set(['ALLOCATED', 'PENDING', 'IN_TRANSIT', 'SHIPPED', 'BACKORDER']);
+        const skipTokens = new Set(['ALLOCATED', 'PENDING', 'IN_TRANSIT', 'SHIPPED', 'BACKORDER', 'WEB_APPLY', 'Y', 'N', 'CID', 'SYS', 'OOW', 'MANUALLY', '']);
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i] === '1' && i + 1 < lines.length && /^\d+$/.test(lines[i + 1])) {
+                let ci = i + 2;
+                let detected = '';
+                while (ci < lines.length && skipTokens.has(lines[ci].toUpperCase())) {
+                    if (statusTokens.has(lines[ci].toUpperCase()) && !detected) detected = lines[ci].toUpperCase();
+                    ci++;
+                }
+                if (ci + 1 < lines.length) {
+                    const pn = lines[ci], desc = lines[ci + 1];
+                    if (pn.length > 3 && /\d/.test(pn) && !pn.includes('No') && !pn.includes('ID')) {
+                        parsed.push({ pn, desc, status: detected, checked: false });
+                        i = ci + 1;
+                    }
+                }
+            }
+        }
+        if (parsed.length === 0) return alert('❌ No se pudo reconocer ninguna pieza en ese formato. Verifica el texto copiado.');
+        const key = currentKey;
+        if (await mutate(map => { const eq = map.get(key); if (eq) eq.parts = parsed; })) alert(`✓ ¡Éxito! Se reconocieron y guardaron ${parsed.length} piezas.`);
+    }
+
+    /* ── Carga Repair (Excel/CSV) ── */
+    function onRepairFile(e) {
+        const input = e.target;
+        const file = input.files[0];
+        if (!file) return;
+        if (!cryptoOk()) { alert('El cifrado está bloqueado: no se puede guardar UCS.'); input.value = ''; return; }
+        setStatus('Procesando archivo e importando elementos REPAIR...', '#333');
+        const reader = new FileReader();
+        reader.onload = async (ev) => {
+            try {
+                const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+                const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+                if (json.length === 0) { alert('El archivo Excel seleccionado está vacío.'); return; }
+                const items = new Map();
+                json.forEach(r => {
+                    const rma  = String(r['Rma No'] || r['RMA_NO'] || r['Rma_No'] || '').trim();
+                    const sn   = String(r['Product SN'] || r['PRODUCT_SN'] || r['Product_SN'] || '').trim();
+                    const type = String(r['Product Type'] || r['PRODUCT_TYPE'] || r['Product_Type'] || '').trim();
+                    const st   = String(r['Item Status'] || r['ITEM_STATUS'] || r['Item_Status'] || '').trim();
+                    if (rma && st.toUpperCase() === 'REPAIR') {
+                        const id = `${rma}_${sn}`.replace(/\s+/g, '');
+                        items.set(id, { id, 'Rma No': rma, 'Product SN': sn, 'Product Type': type, 'Item Status': 'REPAIR' });
+                    }
+                });
+                if (items.size === 0) { alert('No se encontraron filas válidas con Item Status = REPAIR.'); return; }
+                const ok = await mutate(map => items.forEach((it, id) => {
+                    const prev = map.get(id);
+                    map.set(id, { ...it, parts: (prev && prev.parts) || [], timestamp: Date.now() });
+                }));
+                if (ok) alert(`¡Carga Exitosa! Se importaron ${items.size} equipos.`);
+            } catch (err) {
+                console.error(err);
+                alert('No se pudo leer el archivo. Comprueba que es un Excel o CSV válido.');
+            } finally { input.value = ''; statusOk(); }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    /* ── Carga de piezas (KBO) ── */
+    function onPartsFile(e) {
+        const input = e.target;
+        const file = input.files[0];
+        if (!file) return;
+        if (Object.keys(ucsData).length === 0) {
+            alert('⚠️ Primero debes tener equipos cargados en la página principal.');
+            input.value = ''; return;
+        }
+        setStatus('Procesando archivo KBO y cruzando piezas...', '#333');
+        const reader = new FileReader();
+        reader.onload = async (ev) => {
+            try {
+                const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+                const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+                const byRma = {};
+                json.forEach(r => {
+                    const rma  = String(r['RMA_NO'] || r['Rma No'] || r['Rma_No'] || '').trim().toUpperCase();
+                    const pn   = String(r['NEW_PART_NO'] || r['Part No#'] || r['PART_NO'] || r['New PN'] || '').trim();
+                    const desc = String(r['NEW_PART_DESC'] || r['Part Name'] || r['PART_DESC'] || r['New PN Desc'] || '').trim();
+                    const st   = String(r['STATUS'] || r['Status'] || r['PART_STATUS'] || r['PARTS_STATUS'] || r['Part Status'] || r['NEW_PART_STATUS'] || r['ITEM_STATUS'] || '').trim();
+                    if (rma && pn) (byRma[rma] = byRma[rma] || []).push({ pn, desc, status: st, checked: false });
+                });
+                let matched = 0, partsCount = 0, without = 0;
+                const ok = await mutate(map => {
+                    matched = 0; partsCount = 0; without = 0;   // la transacción puede reintentarse
+                    map.forEach(eq => {
+                        const rma = String(eq['Rma No'] || '').trim().toUpperCase();
+                        if (rma && byRma[rma]) { eq.parts = byRma[rma].map(p => ({ ...p })); matched++; partsCount += byRma[rma].length; }
+                        else without++;
+                    });
+                });
+                if (ok) alert(`Proceso KBO finalizado:\n• Equipos con piezas asignadas: ${matched} (${partsCount} piezas)\n• Equipos sin piezas en el archivo KBO: ${without} (se mantienen en la lista, marcados en naranja)\n\nNo se ha borrado ninguna línea de la lista principal.`);
+            } catch (err) {
+                console.error(err);
+                alert('No se pudo leer el archivo. Comprueba que es un Excel o CSV válido.');
+            } finally { input.value = ''; statusOk(); }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    /* ── Impresión (iframe oculto, sin tocar el resto de la página) ── */
+    function printHtml(html) {
+        const f = document.createElement('iframe');
+        f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+        document.body.appendChild(f);
+        const d = f.contentWindow.document;
+        d.open(); d.write(html); d.close();
+        setTimeout(() => { f.contentWindow.focus(); f.contentWindow.print(); setTimeout(() => f.remove(), 1500); }, 250);
+    }
+    const PRINT_CSS = `
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; margin: 20px; color: #000; }
+        h2 { text-align: center; margin-bottom: 20px; color: #2c3e50; }
+        * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .blk { border: 2px solid #333; border-radius: 6px; padding: 15px; margin-bottom: 25px; page-break-inside: avoid; }
+        .hd { font-size: 1.1em; margin-bottom: 10px; border-bottom: 2px dashed #666; padding-bottom: 5px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 5px; }
+        th { background: #eee; font-size: 0.85em; padding: 5px; border: 1px solid #aaa; text-align: left; }
+        td { padding: 6px; font-size: 0.85em; border: 1px solid #aaa; }`;
+    const locOf = (pn) => { const l = invLoc[pn]; return (l && l.trim() !== '') ? l : 'Sin ubicar'; };
+    function partsTable(parts) {
+        if (!parts.length) return '<p style="font-style:italic; font-size:0.9em; margin:5px 0 0 0;">No contiene piezas registradas.</p>';
+        return `<table><thead><tr><th>Org PN</th><th>Descripción Pieza</th><th>Ubicación</th><th>Estado</th></tr></thead><tbody>${
+            parts.map(p => `<tr><td>${esc(p.pn)}</td><td>${esc(p.desc)}</td><td><strong>[ ${esc(locOf(p.pn))} ]</strong></td><td>${p.checked ? '✓ OK' : '✗ Pend'}</td></tr>`).join('')
+        }</tbody></table>`;
+    }
+    function blockHeader(eq, n) {
+        const t = trackMap.get(rmaKey(eq['Rma No']));
+        return `<div class="hd">${n ? `<strong>#${n} | </strong>` : ''}<strong>RMA:</strong> ${esc(eq['Rma No'])} | <strong>SN:</strong> ${esc(eq['Product SN'])} | <strong>Tipo:</strong> ${esc(eq['Product Type'])} | <strong>Garantía:</strong> ${esc(garText(t))} | <strong>Fase:</strong> ${esc(t ? t.fase : '—')}</div>`;
+    }
+    function printMain() {
+        const q = $('ucs-search').value.trim().toLowerCase();
+        let n = 0, body = '';
+        Object.keys(ucsData).forEach(key => {
+            const eq = ucsData[key];
+            if (!String(eq['Rma No'] ?? '').toLowerCase().includes(q) && !String(eq['Product SN'] ?? '').toLowerCase().includes(q)) return;
+            n++;
+            body += `<div class="blk">${blockHeader(eq, n)}${partsTable(eq.parts || [])}</div>`;
+        });
+        printHtml(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Equipos</title><style>${PRINT_CSS}</style></head><body><h2>Listado de Equipos y Preparación de Piezas</h2>${body}</body></html>`);
+    }
+    function printSingle() {
+        const eq = ucsData[currentKey];
+        if (!eq) return;
+        printHtml(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Piezas</title><style>${PRINT_CSS}</style></head><body><h2>Piezas Registradas</h2><div class="blk">${blockHeader(eq, 0)}${partsTable(eq.parts || [])}</div></body></html>`);
+    }
+
+    /* ── Abrir / cerrar y eventos ── */
+    function open()  { subscribe(); ovl.classList.add('show'); render(); }
+    function close() { closeParts(); ovl.classList.remove('show'); }
+
+    $('ucs-button').addEventListener('click', open);
+    $('ucs-close-btn').addEventListener('click', close);
+    $('ucs-parts-close').addEventListener('click', closeParts);
+    ovl.addEventListener('click', (e) => { if (e.target === ovl) close(); });
+    pOvl.addEventListener('click', (e) => { if (e.target === pOvl) closeParts(); });
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        if (isPartsOpen()) closeParts(); else if (isOpen()) close();
+    });
+
+    $('ucs-search').addEventListener('input', render);
+    $('ucs-print-btn').addEventListener('click', printMain);
+    $('ucs-update-file').addEventListener('change', onRepairFile);
+    $('ucs-parts-file').addEventListener('change', onPartsFile);
+
+    $('ucs-tbody').addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-act]');
+        if (!b) return;
+        if (b.dataset.act === 'view') openParts(b.dataset.key);
+        else if (b.dataset.act === 'delrow') deleteEquipment(b.dataset.key);
+    });
+    $('ucs-parts-body').addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-act]');
+        if (!b) return;
+        const act = b.dataset.act;
+        if (act === 'toggle') togglePart(Number(b.dataset.idx));
+        else if (act === 'complete') completeEquipment();
+        else if (act === 'print') printSingle();
+        else if (act === 'parse') parseManualBlocks();
+    });
+</script>
+
 </body>
 </html>
