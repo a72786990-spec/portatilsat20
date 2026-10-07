@@ -2986,7 +2986,7 @@
                         <div class="stats-summary-value" id="rma-accounting-count-f">0</div>
                     </div>
                     <div class="stats-summary-card">
-                        <div class="stats-summary-label">Sin garantía asignada</div>
+                        <div class="stats-summary-label">Total</div>
                         <div class="stats-summary-value" id="rma-accounting-count-sc">0</div>
                     </div>
                     <div class="stats-summary-card">
@@ -3159,7 +3159,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const rmaAddBtn          = document.getElementById('rma-add-btn');
     const rmaSearchInput     = document.getElementById('rma-search-input');
     const rmaAdjustBtn       = document.getElementById('rma-adjust-btn');
-    const rmaBoardEl         = document.querySelector('.rma-board');
+    const rmaBoardEl         = document.querySelector('#rma-modal-overlay .rma-board');
     const rmaPhaseCheckboxes = document.querySelectorAll('.rma-phase-check');
     const rmaHistoryBtn      = document.getElementById('rma-history-btn');
     const rmaHistModalOverlay = document.getElementById('rma-historial-modal-overlay');
@@ -4935,7 +4935,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let rmaVisiblePhases = rmaGetVisiblePhases();
 
     function rmaApplyPhaseFilter() {
-        document.querySelectorAll('.rma-board .rma-column').forEach(col => {
+        document.querySelectorAll('#rma-modal-overlay .rma-board .rma-column').forEach(col => {
             const phase = col.getAttribute('data-phase');
             col.style.display = rmaVisiblePhases.has(phase) ? '' : 'none';
         });
@@ -6685,7 +6685,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         rmaAccountingCountG.textContent = countG;
         rmaAccountingCountF.textContent = countF;
-        rmaAccountingCountSC.textContent = countSinAsignar;
+        rmaAccountingCountSC.textContent = countG + countF;
 
         if (!finalizados.length) {
             rmaAccountingTotalEl.textContent = '—';
