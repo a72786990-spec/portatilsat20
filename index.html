@@ -250,7 +250,7 @@
                 await batch.commit();
             }
         }
-        const ENCRYPTED_SINGLE_DOCS = ['transporte', 'incidencias', 'incidencias_historial', 'rma_tracking', 'rma_historial', 'rma_contabilidad', 'user_roles', 'inventario', 'total_rma', 'ucs'];
+        const ENCRYPTED_SINGLE_DOCS = ['transporte', 'incidencias', 'incidencias_historial', 'rma_tracking', 'rma_historial', 'rma_contabilidad', 'rma_cambio_fase', 'user_roles', 'inventario', 'total_rma', 'ucs'];
 
         const cryptoChangeImpl = async (currentPass, newPass, remember, onProgress, ph) => {
             if (!cryptoSupported()) throw new Error('nocrypto');
@@ -738,6 +738,32 @@
                 return out;
             } catch (e) {
                 console.error('Firebase append rma_historial error:', e);
+                return null;
+            }
+        };
+
+        /* ── CAMBIO DE FASE RMA (Repair → En espera) Firebase ──
+           Colección propia y cifrada (AES-GCM, misma clave que el resto). Solo la leen los
+           Administradores y el Master desde la pantalla "Cambio de fase". NO la usa ninguna
+           estadística ni la contabilidad. */
+        window._fbGetRmaCambioFaseFresh = rowsGetFresh('rma_cambio_fase');
+        window._fbListenRmaCambioFase = rowsListen('rma_cambio_fase', 'rma_cambio_fase');
+        window._fbAppendRmaCambioFase = async (newEntries) => {
+            try {
+                let out = null;
+                const aad = 'rma_cambio_fase/entries';
+                await runTransaction(db, async (tx) => {
+                    const ref = doc(db, 'rma_cambio_fase', 'entries');
+                    const snap = await tx.get(ref);
+                    const theirs = snap.exists() ? (((await decodeDoc(snap.data(), aad)) || {}).rows || []) : [];
+                    const ids = new Set(theirs.map(r => r && r.id));
+                    const merged = theirs.concat((newEntries || []).filter(e => e && !ids.has(e.id)));
+                    tx.set(ref, await encodeDoc({ rows: merged }, aad));
+                    out = merged;
+                });
+                return out;
+            } catch (e) {
+                console.error('Firebase append rma_cambio_fase error:', e);
                 return null;
             }
         };
@@ -1722,6 +1748,7 @@
         body.restricted-mode #rma-close-btn { display: none; }
         body.restricted-mode #rma-stats-btn { display: none; }
         body.restricted-mode #rma-accounting-btn { display: none; }
+        body.restricted-mode #rma-cambiofase-btn { display: none; }
 
         /* ── Funciones exclusivas del usuario Master (cambiar clave de cifrado, importar/exportar datos) ── */
         body.not-master .master-only { display: none !important; }
@@ -1749,6 +1776,17 @@
         .rma-historial-fase.finalizado { background: var(--success-color); color: #fff; }
         .rma-historial-user { color: var(--text-color); flex: 1; min-width: 160px; }
         .rma-historial-fecha { color: var(--secondary-color); font-size: 0.78rem; white-space: nowrap; }
+
+        /* Cambio de fase (Repair → En espera) */
+        .rma-cf-row {
+            display: flex; flex-direction: column; gap: 6px; padding: 10px 12px;
+            border: 1px solid var(--border-color); border-radius: 6px; font-size: 0.85rem;
+        }
+        .rma-cf-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .rma-cf-motivo { color: var(--text-color); white-space: pre-wrap; word-break: break-word; }
+        .rma-cf-users { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--secondary-color); font-size: 0.8rem; }
+        .rma-cf-users b { color: var(--text-color); font-weight: 700; }
+        .rma-cf-count { color: var(--secondary-color); font-size: 0.8rem; margin: 0 0 10px; }
 
         /* ══════════════════════════════════════════
            CONFIGURACIÓN GENERAL
@@ -2396,6 +2434,7 @@
                 <div style="display:flex; align-items:center; gap:8px;">
                     <button id="rma-stats-btn" class="modal-close-btn" title="Estadísticas (solo administrador)" style="font-size:1rem;"><i class="fas fa-chart-line"></i></button>
                     <button id="rma-accounting-btn" class="modal-close-btn" title="Contabilidad (solo administrador)" style="font-size:1rem;"><i class="fas fa-file-invoice-dollar"></i></button>
+                    <button id="rma-cambiofase-btn" class="modal-close-btn" title="Cambio de fase: Repair → En espera (solo administrador)" style="font-size:1rem;"><i class="fas fa-clipboard-list"></i></button>
                     <button id="rma-history-btn" class="modal-close-btn" title="Historial de fases" style="font-size:1rem;"><i class="fas fa-history"></i></button>
                     <button id="rma-close-btn" class="modal-close-btn" title="Cerrar"><i class="fas fa-times"></i></button>
                 </div>
@@ -2646,6 +2685,38 @@
                 </div>
                 <div id="rma-historial-empty" class="inc-empty">No hay movimientos registrados todavía.</div>
                 <div id="rma-historial-list" class="rma-historial-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════
+         CAMBIO DE FASE (Repair → En espera) — solo Administradores y Master
+    ══════════════════════════════════════════ -->
+    <div id="rma-cambiofase-modal-overlay" class="modal-overlay">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h2><i class="fas fa-clipboard-list"></i> Cambio de fase: Repair → En espera</h2>
+                <button id="rma-cambiofase-close-btn" class="modal-close-btn" title="Cerrar"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="tp-search-wrap" style="margin-bottom:12px; width:100%;">
+                    <i class="fas fa-search"></i>
+                    <input type="text" id="rma-cambiofase-search" placeholder="Buscar por RMA..." autocomplete="off" style="width:100%;">
+                </div>
+                <div class="stats-filters">
+                    <div class="stats-filter-field">
+                        <label for="rma-cambiofase-date-from">Desde</label>
+                        <input type="date" id="rma-cambiofase-date-from">
+                    </div>
+                    <div class="stats-filter-field">
+                        <label for="rma-cambiofase-date-to">Hasta</label>
+                        <input type="date" id="rma-cambiofase-date-to">
+                    </div>
+                    <button id="rma-cambiofase-clear-btn" class="rma-add-btn" style="background:var(--secondary-color);"><i class="fas fa-eraser"></i> Limpiar</button>
+                </div>
+                <p id="rma-cambiofase-count" class="rma-cf-count"></p>
+                <div id="rma-cambiofase-empty" class="inc-empty">Cargando...</div>
+                <div id="rma-cambiofase-list" class="rma-historial-list"></div>
             </div>
         </div>
     </div>
@@ -3165,6 +3236,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const rmaHistModalOverlay = document.getElementById('rma-historial-modal-overlay');
     const rmaHistCloseBtn    = document.getElementById('rma-historial-close-btn');
     const rmaHistSearchInput = document.getElementById('rma-historial-search');
+    const rmaCfBtn         = document.getElementById('rma-cambiofase-btn');
+    const rmaCfOverlay     = document.getElementById('rma-cambiofase-modal-overlay');
+    const rmaCfCloseBtn    = document.getElementById('rma-cambiofase-close-btn');
+    const rmaCfSearch      = document.getElementById('rma-cambiofase-search');
+    const rmaCfDateFrom    = document.getElementById('rma-cambiofase-date-from');
+    const rmaCfDateTo      = document.getElementById('rma-cambiofase-date-to');
+    const rmaCfClearBtn    = document.getElementById('rma-cambiofase-clear-btn');
 
 
     const rmaInfoModalOverlay = document.getElementById('rma-info-modal-overlay');
@@ -5359,6 +5437,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const rmaName = rmaTracking[idx].rma;
         const quitarDeTransporte = (oldPhase === 'Pendiente Recibir' && newPhase === 'Pretest');
 
+        /* Cambio de fase Repair → En espera: se registra aparte (solo lo ven Administradores/Master,
+           no entra en estadísticas). Quién sacó el RMA de Pretest: se anota en la ficha al salir de
+           Pretest; para RMAs anteriores a este cambio se deduce del historial de movimientos. */
+        const esRepairAEspera = (oldPhase === 'Repair' && newPhase === 'En espera');
+        const cfFecha = rmaTracking[idx].fecha;
+        if (oldPhase === 'Pretest' && newPhase !== 'Pretest') {
+            rmaTracking[idx].pretestSalidaUsuario = currentUserEmail;
+        }
+        const cfUsuarioPretest = esRepairAEspera ? rmaUsuarioSalidaPretest(rmaTracking[idx]) : '';
+
         /* "En espera de…" solo aplica dentro de la fase en la que se marcó: si al cambiar de fase
            seguía activo, se quita (queda registrado en Info) y el cronómetro continúa según la
            nueva fase (bloque siguiente). */
@@ -5429,6 +5517,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const cronoMsNow = rmaCronoRawMs(entry);
         await saveRmaTracking();
         await addRmaHistorial(rmaName, newPhase, currentUserEmail, { cronoMs: cronoMsNow });
+        if (esRepairAEspera) {
+            registrarCambioFase({ rma: rmaName, motivo: motivo || '', fecha: cfFecha, usuarioPretest: cfUsuarioPretest, usuarioEspera: currentUserEmail });
+        }
         renderRmaTracking();
         showNotification(`RMA ${rmaName} movido a "${newPhase}"`);
 
@@ -5936,6 +6027,175 @@ document.addEventListener('DOMContentLoaded', () => {
     rmaHistModalOverlay.addEventListener('click', (e) => { if (e.target === rmaHistModalOverlay) rmaHistModalOverlay.classList.remove('show'); });
     rmaHistSearchInput.addEventListener('input', renderRmaHistorial);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && rmaHistModalOverlay.classList.contains('show')) rmaHistModalOverlay.classList.remove('show'); });
+
+    /* ════════════════════════════════════════
+       CAMBIO DE FASE: Repair → En espera (solo Administradores y Master)
+       Datos cifrados en su propia colección (rma_cambio_fase). No se usa en estadísticas.
+    ════════════════════════════════════════ */
+    let rmaCambioFase = [];            // filas en memoria: SOLO mientras la ventana está abierta
+    let rmaCambioFasePending = [];     // registros creados en esta sesión aún sin confirmar en el servidor
+    let rmaCambioFaseUnsub = null;
+    let rmaCambioFaseRetry = null;
+    let rmaCambioFaseBusy = false;
+    let rmaCambioFaseLoaded = false;
+    let rmaCambioFaseError = false;
+
+    /* Usuario que sacó el RMA de Pretest la última vez */
+    function rmaUsuarioSalidaPretest(entry) {
+        if (entry && entry.pretestSalidaUsuario) return entry.pretestSalidaUsuario;
+        const key = rmaKeyOf(entry && entry.rma);
+        const moves = rmaHistorial.map((h, i) => ({ h, i }))
+            .filter(x => rmaKeyOf(x.h.rma) === key)
+            .sort((a, b) => (fechaTs(a.h.fecha) - fechaTs(b.h.fecha)) || (a.i - b.i))
+            .map(x => x.h);
+        let last = -1;
+        moves.forEach((m, i) => { if (m.fase === 'Pretest') last = i; });
+        return (last !== -1 && moves[last + 1]) ? (moves[last + 1].usuario || '') : '';
+    }
+
+    async function flushRmaCambioFase() {
+        if (rmaCambioFaseBusy || !rmaCambioFasePending.length) return;
+        if (!window._fbAppendRmaCambioFase) return;
+        rmaCambioFaseBusy = true;
+        try {
+            const batch = rmaCambioFasePending.slice();
+            const merged = await window._fbAppendRmaCambioFase(batch);
+            if (!merged) {
+                clearTimeout(rmaCambioFaseRetry);
+                rmaCambioFaseRetry = setTimeout(() => { rmaCambioFaseRetry = null; flushRmaCambioFase(); }, 15000);
+                return;
+            }
+            const sent = new Set(batch.map(e => e.id));
+            rmaCambioFasePending = rmaCambioFasePending.filter(e => !sent.has(e.id));
+            if (isAdmin && rmaCfOverlay.classList.contains('show')) applyRmaCambioFaseRows(merged);
+        } finally { rmaCambioFaseBusy = false; }
+        if (rmaCambioFasePending.length) flushRmaCambioFase();
+    }
+
+    /* No bloquea el cambio de fase si falla: se reintenta solo cada 15 s */
+    function registrarCambioFase(d) {
+        rmaCambioFasePending.push({
+            id: genId('rmacf'), rma: d.rma, motivo: d.motivo, fecha: d.fecha,
+            usuarioPretest: d.usuarioPretest || '', usuarioEspera: d.usuarioEspera || ''
+        });
+        return flushRmaCambioFase();
+    }
+
+    function applyRmaCambioFaseRows(rows) {
+        if (!rmaCfOverlay.classList.contains('show')) return;   // ventana cerrada: no se guarda nada en memoria
+        const list = Array.isArray(rows) ? rows : [];
+        const ids = new Set(list.map(r => r && r.id));
+        rmaCambioFase = list.concat(rmaCambioFasePending.filter(e => !ids.has(e.id)));
+        rmaCambioFaseLoaded = true;
+        rmaCambioFaseError = false;
+        renderRmaCambioFase();
+    }
+
+    async function loadRmaCambioFase() {
+        const rows = window._fbGetRmaCambioFaseFresh ? await window._fbGetRmaCambioFaseFresh() : null;
+        if (rows === null) {
+            if (!rmaCambioFaseLoaded) { rmaCambioFaseError = true; renderRmaCambioFase(); }
+            return;
+        }
+        applyRmaCambioFaseRows(rows);
+    }
+
+    function stopRmaCambioFaseListener() {
+        if (rmaCambioFaseUnsub) { try { rmaCambioFaseUnsub(); } catch (e) {} rmaCambioFaseUnsub = null; }
+    }
+
+    function startRmaCambioFaseListener() {
+        stopRmaCambioFaseListener();
+        if (!(window._fbCryptoReady && window._fbCryptoReady())) { rmaCambioFaseError = true; renderRmaCambioFase(); return; }
+        if (!window._fbListenRmaCambioFase) { loadRmaCambioFase(); return; }
+        rmaCambioFaseUnsub = window._fbListenRmaCambioFase(applyRmaCambioFaseRows, () => {
+            stopRmaCambioFaseListener();
+            loadRmaCambioFase();
+        });
+    }
+
+    function renderRmaCambioFase() {
+        const empty = document.getElementById('rma-cambiofase-empty');
+        const list  = document.getElementById('rma-cambiofase-list');
+        const count = document.getElementById('rma-cambiofase-count');
+        if (!rmaCambioFaseLoaded) {
+            list.innerHTML = '';
+            count.textContent = '';
+            empty.style.display = 'block';
+            empty.textContent = rmaCambioFaseError ? 'No se pudieron cargar los datos. Cierra la ventana y vuelve a abrirla.' : 'Cargando...';
+            return;
+        }
+        const term = (rmaCfSearch.value || '').trim().toLowerCase();
+        const from = rmaCfDateFrom.value ? new Date(rmaCfDateFrom.value + 'T00:00:00') : null;
+        const to   = rmaCfDateTo.value   ? new Date(rmaCfDateTo.value + 'T23:59:59')   : null;
+        let items = rmaCambioFase.map((e, i) => ({ e, i }))
+            .sort((a, b) => (fechaTs(b.e.fecha) - fechaTs(a.e.fecha)) || (b.i - a.i))
+            .map(x => x.e);
+        const total = items.length;
+        if (term) items = items.filter(e => String(e.rma ?? '').toLowerCase().includes(term));
+        if (from || to) {
+            items = items.filter(e => {
+                const d = parseFechaHora(e.fecha);
+                if (!d) return false;
+                if (from && d < from) return false;
+                if (to && d > to) return false;
+                return true;
+            });
+        }
+        count.textContent = total ? `${items.length} de ${total} cambios` : '';
+        if (!items.length) {
+            empty.style.display = 'block';
+            empty.textContent = total ? 'No hay resultados con esos filtros.' : 'No hay cambios de Repair a En espera registrados todavía.';
+            list.innerHTML = '';
+            return;
+        }
+        empty.style.display = 'none';
+        list.innerHTML = items.map(e => `
+            <div class="rma-cf-row">
+                <div class="rma-cf-head">
+                    <span class="rma-historial-rma">${esc(e.rma)}</span>
+                    <span class="rma-historial-fecha"><i class="fas fa-calendar"></i> ${esc(e.fecha)}</span>
+                </div>
+                <div class="rma-cf-motivo"><b>Motivo:</b> ${esc(e.motivo || '—')}</div>
+                <div class="rma-cf-users">
+                    <span><i class="fas fa-user"></i> <b>Pasó de Pretest a otra fase:</b> ${esc(e.usuarioPretest || '—')}</span>
+                    <span><i class="fas fa-user"></i> <b>Pasó de Repair a En espera:</b> ${esc(e.usuarioEspera || 'desconocido')}</span>
+                </div>
+            </div>`).join('');
+    }
+
+    function openRmaCambioFase() {
+        if (!isAdmin) return;   // solo Administradores y Master
+        rmaCambioFase = [];
+        rmaCambioFaseLoaded = false;
+        rmaCambioFaseError = false;
+        rmaCfOverlay.classList.add('show');
+        renderRmaCambioFase();
+        startRmaCambioFaseListener();
+        setTimeout(() => rmaCfSearch.focus(), 50);
+    }
+
+    function closeRmaCambioFase() {
+        rmaCfOverlay.classList.remove('show');
+        stopRmaCambioFaseListener();
+        rmaCambioFase = [];
+        rmaCambioFaseLoaded = false;
+        rmaCfSearch.value = '';
+        rmaCfDateFrom.value = '';
+        rmaCfDateTo.value = '';
+    }
+
+    rmaCfBtn.addEventListener('click', openRmaCambioFase);
+    rmaCfCloseBtn.addEventListener('click', closeRmaCambioFase);
+    rmaCfOverlay.addEventListener('click', (e) => { if (e.target === rmaCfOverlay) closeRmaCambioFase(); });
+    rmaCfSearch.addEventListener('input', renderRmaCambioFase);
+    rmaCfDateFrom.addEventListener('change', renderRmaCambioFase);
+    rmaCfDateTo.addEventListener('change', renderRmaCambioFase);
+    rmaCfClearBtn.addEventListener('click', () => {
+        rmaCfSearch.value = ''; rmaCfDateFrom.value = ''; rmaCfDateTo.value = '';
+        renderRmaCambioFase();
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && rmaCfOverlay.classList.contains('show')) closeRmaCambioFase(); });
 
     /* ════════════════════════════════════════
        ESTADÍSTICAS DE SEGUIMIENTO RMA (solo admin)
@@ -7831,6 +8091,7 @@ document.addEventListener('DOMContentLoaded', () => {
         stopIncidenciasListener();
         stopContabilidadListener(); lastContabJson = '';
         rmaHistorialPending = [];
+        rmaCambioFasePending = []; clearTimeout(rmaCambioFaseRetry); rmaCambioFaseRetry = null; closeRmaCambioFase();
         transportEntries = []; lastSyncedTransportRows = []; incidencias = []; incidenciasHistorial = [];
         lastSyncedIncRows = []; lastIncRawJson = ''; lastSyncedIncHistRows = []; lastSyncedRoles = [];
         rmaTracking = []; lastSyncedRmaRows = []; rmaHistorial = []; userRoles = [];
