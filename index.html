@@ -1776,6 +1776,24 @@
         .rma-historial-fase.finalizado { background: var(--success-color); color: #fff; }
         .rma-historial-user { color: var(--text-color); flex: 1; min-width: 160px; }
         .rma-historial-fecha { color: var(--secondary-color); font-size: 0.78rem; white-space: nowrap; }
+        /* Historial agrupado por RMA con sublíneas desplegables */
+        .rma-hgroup { border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
+        .rma-hgroup > .rma-historial-row { border: none; cursor: pointer; }
+        .rma-hgroup > .rma-historial-row:hover { background: rgba(0,123,255,0.06); }
+        .rma-hchev { color: var(--secondary-color); transition: transform .15s; width: 12px; }
+        .rma-hgroup.open .rma-hchev { transform: rotate(90deg); }
+        .rma-hcount { color: var(--secondary-color); font-size: 0.75rem; white-space: nowrap; }
+        .rma-hsub { display: none; border-top: 1px solid var(--border-color); padding: 6px 12px 8px 34px; background: rgba(128,128,128,0.05); }
+        .rma-hgroup.open .rma-hsub { display: block; }
+        .rma-hsubrow { padding: 6px 0; border-bottom: 1px dashed var(--border-color); font-size: 0.82rem; }
+        .rma-hsubrow:last-child { border-bottom: none; }
+        .rma-hsubhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .rma-hdur { font-family: monospace; font-weight: 700; font-size: 0.78rem; color: var(--primary-color); white-space: nowrap; }
+        .rma-hdur.ticket { color: #e83e8c; } .rma-hdur.transfer { color: #17a2b8; } .rma-hdur.espera { color: var(--warning-color); }
+        .rma-hinfo { margin: 4px 0 0 4px; padding-left: 10px; border-left: 3px solid var(--primary-color); font-size: 0.78rem; color: var(--text-color); }
+        .rma-hinfo div { padding: 1px 0; } .rma-hinfo small { color: var(--secondary-color); }
+        .rma-hbadge-info { color: var(--primary-color); font-size: 0.75rem; white-space: nowrap; }
+        .rma-hevento { font-weight: 700; font-size: 0.75rem; padding: 2px 9px; border-radius: 10px; background: var(--warning-color); color: #212529; white-space: nowrap; }
 
         /* Cambio de fase (Repair → En espera) */
         .rma-cf-row {
@@ -5126,10 +5144,30 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function addRmaHistorial(rma, fase, usuario, extra) {
-        const entry = Object.assign({ id: genId('rmahist'), rma, fase, usuario: usuario || 'desconocido', fecha: nowStr() }, extra || {});
+        const entry = Object.assign({ id: genId('rmahist'), rma, fase, usuario: usuario || 'desconocido', fecha: nowStr(), ts: Date.now() }, extra || {});
         rmaHistorial.push(entry);
         rmaHistorialPending.push(entry);
         await flushRmaHistorial();
+    }
+
+    /* Movimientos de fase (excluye los eventos "En espera de…", que no son fases y no deben
+       entrar en estadísticas ni en cálculos de tramos). */
+    function rmaHistFases() { return rmaHistorial.filter(h => !h.evento); }
+
+    /* Notas de Info escritas desde el último cambio de fase: se guardan junto al nuevo movimiento
+       (pertenecen a la fase que se acaba de dejar) y se marcan como ya atribuidas. */
+    function rmaInfoSnapshot(entry) {
+        const done = new Set(Array.isArray(entry.infoAtribIds) ? entry.infoAtribIds : []);
+        const list = (Array.isArray(entry.info) ? entry.info : []).filter(n => n && !done.has(n.id));
+        entry.infoAtribIds = (Array.isArray(entry.info) ? entry.info : []).map(n => n.id);
+        return list.map(n => ({ fecha: n.fecha || '', usuario: n.usuario || '', texto: n.texto || '' }));
+    }
+
+    /* Cierra el evento "En espera de…" abierto: lo registra en el historial con su duración. */
+    async function rmaLogEsperaDeFin(rmaName, fase, entryLike) {
+        if (!entryLike || !entryLike.esperaMotivo) return;
+        const dur = (typeof entryLike.esperaDeStartedAt === 'number') ? Math.max(0, Date.now() - entryLike.esperaDeStartedAt) : null;
+        await addRmaHistorial(rmaName, fase, currentUserEmail, { evento: true, tipo: 'espera_de', accion: 'fin', eventoId: entryLike.esperaDeId || null, motivo: entryLike.esperaMotivo, duracionMs: dur });
     }
 
     function updateRmaTrackingBadge() {
@@ -5254,9 +5292,12 @@ document.addEventListener('DOMContentLoaded', () => {
         /* Desmarcar: se registra en Info y se reanuda el cronómetro */
         if (!Array.isArray(entry.info)) entry.info = [];
         entry.info.push({ id: genId('rmainfo'), fecha: todayISO(), texto: `Deja de estar en espera de: ${entry.esperaMotivo}. Cronómetro reanudado.`, usuario: currentUserEmail });
-        entry.esperaMotivo = null;
+        const _espSnap = { esperaMotivo: entry.esperaMotivo, esperaDeStartedAt: entry.esperaDeStartedAt, esperaDeId: entry.esperaDeId };
+        const _espRma = entry.rma, _espFase = entry.fase;
+        entry.esperaMotivo = null; entry.esperaDeStartedAt = null; entry.esperaDeId = null;
         if (!entry.cronometro || typeof entry.cronometro !== 'object') entry.cronometro = { running: false, accumulatedMs: 0, startedAt: null };
         if (!entry.cronometro.running) { entry.cronometro.running = true; entry.cronometro.startedAt = Date.now(); }
+        await rmaLogEsperaDeFin(_espRma, _espFase, _espSnap);
         await saveRmaTracking();
         renderRmaTracking();
         renderRmaInfo();
@@ -5405,6 +5446,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const entry = rmaTracking[idx];
         if (!RMA_ESPERA_PHASES.includes(entry.fase)) { if (rmaInfoCurrentId) renderRmaInfo(); return; }
         entry.esperaMotivo = motivo;
+        entry.esperaDeStartedAt = Date.now();
+        entry.esperaDeId = genId('rmaev');
+        const _evRma = entry.rma, _evFase = entry.fase, _evId = entry.esperaDeId;
         if (!Array.isArray(entry.info)) entry.info = [];
         entry.info.push({ id: genId('rmainfo'), fecha: todayISO(), texto: `En espera de: ${motivo}. Cronómetro pausado.`, usuario: currentUserEmail });
         if (!entry.cronometro || typeof entry.cronometro !== 'object') entry.cronometro = { running: false, accumulatedMs: 0, startedAt: null };
@@ -5415,6 +5459,7 @@ document.addEventListener('DOMContentLoaded', () => {
             c.startedAt = null;
         }
         await saveRmaTracking();
+        await addRmaHistorial(_evRma, _evFase, currentUserEmail, { evento: true, tipo: 'espera_de', accion: 'inicio', eventoId: _evId, motivo });
         renderRmaTracking();
         if (rmaInfoCurrentId) renderRmaInfo();
         showNotification('En espera de: ' + motivo + ' — cronómetro pausado');
@@ -5428,6 +5473,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const idx = rmaTracking.findIndex(e => e.id === id);
         if (idx === -1) return;
         const oldPhase = rmaTracking[idx].fase;
+        /* Datos para el historial (solo de ahora en adelante): duración de la fase especial que se
+           abandona (Ticket / Transfer / En espera), notas de Info de la fase anterior y cierre del
+           evento "En espera de…" si seguía activo. Se calculan ANTES de modificar la ficha. */
+        let prevDuracionMs = null;
+        if (oldPhase === RMA_TICKET_PHASE) prevDuracionMs = rmaTicketElapsedMs(rmaTracking[idx]);
+        else if (oldPhase === RMA_TRANSFER_PHASE) prevDuracionMs = rmaTransferElapsedMs(rmaTracking[idx]);
+        else if (oldPhase === 'En espera') prevDuracionMs = rmaEsperaElapsedMs(rmaTracking[idx]);
+        const infoPrev = rmaInfoSnapshot(rmaTracking[idx]);
+        const esperaDeSnap = rmaTracking[idx].esperaMotivo
+            ? { esperaMotivo: rmaTracking[idx].esperaMotivo, esperaDeStartedAt: rmaTracking[idx].esperaDeStartedAt, esperaDeId: rmaTracking[idx].esperaDeId } : null;
         rmaTracking[idx].fase    = newPhase;
         rmaTracking[idx].fecha   = nowStr();
         rmaTracking[idx].usuario = currentUserEmail;
@@ -5455,6 +5510,8 @@ document.addEventListener('DOMContentLoaded', () => {
             rmaTracking[idx].info.push({ id: genId('rmainfo'), fecha: todayISO(), texto: `Deja de estar en espera de: ${rmaTracking[idx].esperaMotivo} (cambio de fase a "${newPhase}").`, usuario: currentUserEmail });
         }
         rmaTracking[idx].esperaMotivo = null;
+        rmaTracking[idx].esperaDeStartedAt = null;
+        rmaTracking[idx].esperaDeId = null;
 
         /* Cronómetro "Ticket": arranca al entrar en la fase Tickets y se detiene al salir
            (queda registrado en Info). No se contabiliza en ninguna estadística. */
@@ -5516,7 +5573,11 @@ document.addEventListener('DOMContentLoaded', () => {
            estadísticas usan solo este dato, no la fecha de entrada/salida. */
         const cronoMsNow = rmaCronoRawMs(entry);
         await saveRmaTracking();
-        await addRmaHistorial(rmaName, newPhase, currentUserEmail, { cronoMs: cronoMsNow });
+        if (esperaDeSnap) await rmaLogEsperaDeFin(rmaName, oldPhase, esperaDeSnap);
+        const extraHist = { cronoMs: cronoMsNow };
+        if (prevDuracionMs !== null) { extraHist.prevFase = oldPhase; extraHist.prevDuracionMs = prevDuracionMs; }
+        if (infoPrev.length) extraHist.infoPrev = infoPrev;
+        await addRmaHistorial(rmaName, newPhase, currentUserEmail, extraHist);
         if (esRepairAEspera) {
             registrarCambioFase({ rma: rmaName, motivo: motivo || '', fecha: cfFecha, usuarioPretest: cfUsuarioPretest, usuarioEspera: currentUserEmail });
         }
@@ -5594,6 +5655,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (entry.fase !== 'Final Test') return;
         if (!confirm(`¿Finalizar el RMA ${entry.rma}? Pasará al historial como Finalizado.`)) return;
         const cronoMsFinal = rmaCronoRawMs(entry);
+        const infoPrevFin = rmaInfoSnapshot(entry);
+        const esperaDeFin = entry.esperaMotivo ? { esperaMotivo: entry.esperaMotivo, esperaDeStartedAt: entry.esperaDeStartedAt, esperaDeId: entry.esperaDeId } : null;
         rmaTracking.splice(idx, 1);
         await saveRmaTracking();
         /* Se guarda la garantía junto al movimiento "Finalizado" porque el RMA
@@ -5602,7 +5665,10 @@ document.addEventListener('DOMContentLoaded', () => {
            Estadísticas la necesitan aunque el RMA ya no esté en curso). */
         const precioFijado = entry.garantia === 'G' ? rmaContabilidad.precioGarantia
                            : entry.garantia === 'F' ? rmaContabilidad.precioFueraGarantia : null;
-        await addRmaHistorial(entry.rma, 'Finalizado', currentUserEmail, { garantia: entry.garantia || null, precio: precioFijado, cronoMs: cronoMsFinal });
+        if (esperaDeFin) await rmaLogEsperaDeFin(entry.rma, 'Final Test', esperaDeFin);
+        const extraFin = { garantia: entry.garantia || null, precio: precioFijado, cronoMs: cronoMsFinal };
+        if (infoPrevFin.length) extraFin.infoPrev = infoPrevFin;
+        await addRmaHistorial(entry.rma, 'Finalizado', currentUserEmail, extraFin);
         renderRmaTracking();
         showNotification(`RMA ${entry.rma} finalizado`);
     };
@@ -5997,26 +6063,117 @@ document.addEventListener('DOMContentLoaded', () => {
     rmaNewInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') rmaAddBtn.click(); });
 
     /* ── Historial de fases RMA ── */
+    const rmaHistOpen = new Set();   // RMAs desplegados (se conservan entre refrescos en tiempo real)
+
+    function rmaHistTs(h) { return (typeof h.ts === 'number') ? h.ts : fechaTs(h.fecha); }
+
+    function rmaHistInfoHtml(notes) {
+        if (!notes || !notes.length) return '';
+        return `<div class="rma-hinfo">${notes.map(n => `<div><small>${esc(n.fecha || '')}${n.usuario ? ' · ' + esc(n.usuario) : ''}</small> ${esc(n.texto || '')}</div>`).join('')}</div>`;
+    }
+
     function renderRmaHistorial() {
         const term  = (rmaHistSearchInput.value || '').trim().toLowerCase();
         const list  = document.getElementById('rma-historial-list');
         const empty = document.getElementById('rma-historial-empty');
-        let items = rmaHistorial.slice().sort((a, b) => (fechaTs(b.fecha) - fechaTs(a.fecha)));
-        if (term) items = items.filter(e => String(e.rma).toLowerCase().includes(term));
-        if (!items.length) {
+
+        /* Agrupa por RMA */
+        const groups = new Map();
+        rmaHistorial.forEach((h, i) => {
+            const k = rmaKeyOf(h.rma);
+            if (!groups.has(k)) groups.set(k, []);
+            groups.get(k).push({ h, i });
+        });
+        let rows = [];
+        groups.forEach((arr, k) => {
+            arr.sort((a, b) => (rmaHistTs(a.h) - rmaHistTs(b.h)) || (a.i - b.i));
+            const all = arr.map(x => x.h);
+            const fases = all.filter(h => !h.evento);
+            if (!fases.length) return;
+            rows.push({ key: k, rma: fases[fases.length - 1].rma, all, fases, last: fases[fases.length - 1] });
+        });
+        if (term) rows = rows.filter(g => String(g.rma).toLowerCase().includes(term));
+        rows.sort((a, b) => rmaHistTs(b.last) - rmaHistTs(a.last));
+
+        if (!rows.length) {
             empty.style.display = 'block';
             list.innerHTML = '';
             return;
         }
         empty.style.display = 'none';
-        list.innerHTML = items.map(e => `
-            <div class="rma-historial-row">
-                <span class="rma-historial-rma">${esc(e.rma)}</span>
-                <span class="rma-historial-fase${e.fase === 'Finalizado' ? ' finalizado' : ''}">${esc(e.fase)}</span>
-                <span class="rma-historial-user"><i class="fas fa-user"></i> ${esc(e.usuario || 'desconocido')}</span>
-                <span class="rma-historial-fecha">${esc(e.fecha)}</span>
-            </div>`).join('');
+
+        const fmt = (ms) => rmaCronoFormat(ms);
+        list.innerHTML = rows.map(g => {
+            const liveEntry = rmaTracking.find(e => rmaKeyOf(e.rma) === g.key);
+            const consumed = new Set();
+            /* Sublíneas: de la más reciente a la más antigua */
+            const subs = [];
+            for (let i = g.all.length - 1; i >= 0; i--) {
+                const h = g.all[i];
+                if (h.evento) {
+                    if (h.accion === 'fin') continue;                 // se muestra junto a su inicio
+                    const fin = g.all.find(x => x.evento && x.accion === 'fin' && x.eventoId && x.eventoId === h.eventoId);
+                    const dur = fin ? (typeof fin.duracionMs === 'number' ? `<span class="rma-hdur espera" title="Duración de la espera">${fmt(fin.duracionMs)}</span>` : '')
+                                    : `<span class="rma-hdur espera">en curso${liveEntry && typeof liveEntry.esperaDeStartedAt === 'number' ? ' · ' + fmt(Date.now() - liveEntry.esperaDeStartedAt) : ''}</span>`;
+                    subs.push(`<div class="rma-hsubrow"><div class="rma-hsubhead">
+                        <span class="rma-hevento"><i class="fas fa-pause"></i> En espera de: ${esc(h.motivo || '')}</span>
+                        <span class="rma-historial-user"><i class="fas fa-user"></i> ${esc(h.usuario || 'desconocido')}</span>
+                        ${dur}
+                        <span class="rma-historial-fecha">${esc(h.fecha)}${fin ? ' → ' + esc(fin.fecha) : ''}</span>
+                    </div>${fin && fin.usuario && fin.usuario !== h.usuario ? `<div class="rma-hinfo"><small>Finalizada por ${esc(fin.usuario)}</small></div>` : ''}</div>`);
+                    continue;
+                }
+                const idxF = g.fases.indexOf(h);
+                const next = g.fases[idxF + 1];
+                /* Duración en fases especiales: la guarda el movimiento siguiente */
+                let durHtml = '';
+                const cls = h.fase === RMA_TICKET_PHASE ? 'ticket' : h.fase === RMA_TRANSFER_PHASE ? 'transfer' : h.fase === 'En espera' ? 'espera' : '';
+                if (cls) {
+                    if (next && typeof next.prevDuracionMs === 'number') durHtml = `<span class="rma-hdur ${cls}" title="Duración en ${esc(h.fase)}">${fmt(next.prevDuracionMs)}</span>`;
+                    else if (!next && liveEntry && liveEntry.fase === h.fase) {
+                        const ms = h.fase === RMA_TICKET_PHASE ? rmaTicketElapsedMs(liveEntry) : h.fase === RMA_TRANSFER_PHASE ? rmaTransferElapsedMs(liveEntry) : rmaEsperaElapsedMs(liveEntry);
+                        durHtml = `<span class="rma-hdur ${cls}">en curso · ${fmt(ms)}</span>`;
+                    }
+                }
+                const cronoHtml = (typeof h.cronoMs === 'number') ? `<span class="rma-hdur" title="Cronómetro de seguimiento acumulado al llegar a esta fase">Crono ${fmt(h.cronoMs)}</span>` : '';
+                /* Info escrita durante esta fase: la guarda el movimiento siguiente; en la fase actual, la ficha viva */
+                let notes = next ? (next.infoPrev || []) : [];
+                if (!next && liveEntry) {
+                    const done = new Set(Array.isArray(liveEntry.infoAtribIds) ? liveEntry.infoAtribIds : []);
+                    notes = (liveEntry.info || []).filter(n => n && !done.has(n.id)).map(n => ({ fecha: n.fecha, usuario: n.usuario, texto: n.texto }));
+                }
+                const infoBadge = notes.length ? `<span class="rma-hbadge-info"><i class="fas fa-circle-info"></i> Info (${notes.length})</span>` : '';
+                subs.push(`<div class="rma-hsubrow"><div class="rma-hsubhead">
+                        <span class="rma-historial-fase${h.fase === 'Finalizado' ? ' finalizado' : ''}">${esc(h.fase)}${!next && h === g.last ? ' · actual' : ''}</span>
+                        <span class="rma-historial-user"><i class="fas fa-user"></i> ${esc(h.usuario || 'desconocido')}</span>
+                        ${durHtml}${cronoHtml}${infoBadge}
+                        <span class="rma-historial-fecha">${esc(h.fecha)}</span>
+                    </div>${rmaHistInfoHtml(notes)}</div>`);
+            }
+            const open = rmaHistOpen.has(g.key);
+            return `<div class="rma-hgroup${open ? ' open' : ''}" data-key="${esc(g.key)}">
+                <div class="rma-historial-row" data-toggle="1">
+                    <i class="fas fa-chevron-right rma-hchev"></i>
+                    <span class="rma-historial-rma">${esc(g.rma)}</span>
+                    <span class="rma-historial-fase${g.last.fase === 'Finalizado' ? ' finalizado' : ''}">${esc(g.last.fase)}</span>
+                    <span class="rma-historial-user"><i class="fas fa-user"></i> ${esc(g.last.usuario || 'desconocido')}</span>
+                    <span class="rma-hcount">${g.all.length} registro${g.all.length === 1 ? '' : 's'}</span>
+                    <span class="rma-historial-fecha">${esc(g.last.fecha)}</span>
+                </div>
+                <div class="rma-hsub">${subs.join('')}</div>
+            </div>`;
+        }).join('');
     }
+
+    document.getElementById('rma-historial-list').addEventListener('click', (e) => {
+        const head = e.target.closest('[data-toggle]');
+        if (!head) return;
+        const grp = head.closest('.rma-hgroup');
+        if (!grp) return;
+        const k = grp.dataset.key;
+        if (rmaHistOpen.has(k)) rmaHistOpen.delete(k); else rmaHistOpen.add(k);
+        grp.classList.toggle('open', rmaHistOpen.has(k));
+    });
 
     rmaHistoryBtn.addEventListener('click', () => {
         rmaHistModalOverlay.classList.add('show');
@@ -6045,7 +6202,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (entry && entry.pretestSalidaUsuario) return entry.pretestSalidaUsuario;
         const key = rmaKeyOf(entry && entry.rma);
         const moves = rmaHistorial.map((h, i) => ({ h, i }))
-            .filter(x => rmaKeyOf(x.h.rma) === key)
+            .filter(x => !x.h.evento && rmaKeyOf(x.h.rma) === key)
             .sort((a, b) => (fechaTs(a.h.fecha) - fechaTs(b.h.fecha)) || (a.i - b.i))
             .map(x => x.h);
         let last = -1;
@@ -6238,6 +6395,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function computeRmaStatsData() {
         const groups = {};
         rmaHistorial.forEach(h => {
+            if (h.evento) return;
             const rma = h.rma || 'N/A';
             if (!groups[rma]) groups[rma] = [];
             groups[rma].push(h);
@@ -7141,7 +7299,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function rmaHistMovesOf(rma) {
         const key = rmaKeyOf(rma);
-        return rmaHistorial.filter(h => rmaKeyOf(h.rma) === key);
+        return rmaHistorial.filter(h => !h.evento && rmaKeyOf(h.rma) === key);
     }
 
     function dateToLocalInput(d) {
@@ -7297,7 +7455,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (live.fase === RMA_TRANSFER_PHASE) tiempos += ` · Transfer: ${fmt(rmaTransferElapsedMs(live))}`;
             html = `<b>RMA ${esc(live.rma)}</b> · Fase: ${esc(live.fase)} · ${tiempos}${ajTxt}`;
         } else {
-            const moves = rmaHistorial.filter(h => rmaKeyOf(h.rma) === key);
+            const moves = rmaHistorial.filter(h => !h.evento && rmaKeyOf(h.rma) === key);
             if (moves.length) {
                 const tot = computeRmaStatsData().rmaTotals.find(t => rmaKeyOf(t.rma) === key);
                 const dur = tot && tot.durationMs != null ? rmaCronoFormat(tot.durationMs) : '—';
