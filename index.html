@@ -1423,6 +1423,13 @@
         .rma-transfer-block { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 2px dashed var(--border-color); }
         .rma-transfer-block .rma-column-header { color: #17a2b8; border-color: #17a2b8; }
         .rma-transfer-block .rma-column-count  { background: #17a2b8; }
+        /* Bloques plegables Tickets / Transfer: solo se ve el título y las unidades; al hacer clic se despliegan */
+        .rma-collapsible .rma-column-header { cursor: pointer; user-select: none; }
+        .rma-collapsible .rma-column-header:hover { opacity: 0.8; }
+        .rma-collapsible .rma-collapse-chevron { display: inline-block; width: 12px; margin-right: 4px; font-size: 0.7rem; transition: transform 0.15s; }
+        .rma-collapsible:not(.collapsed) .rma-collapse-chevron { transform: rotate(90deg); }
+        .rma-collapsible.collapsed > div[id^="rma-list-"] { display: none; }
+        .rma-collapsible.collapsed { padding-bottom: 4px; margin-bottom: 6px; }
         .rma-column[data-phase="Repair"]    .rma-column-header { color: #6f42c1; border-color: #6f42c1; }
         .rma-column[data-phase="Repair"]    .rma-column-count  { background: #6f42c1; }
         .rma-column[data-phase="Final Test"] .rma-column-header { color: var(--success-color); border-color: var(--success-color); }
@@ -2487,12 +2494,12 @@
                         <div id="rma-list-pretest"></div>
                     </div>
                     <div class="rma-column" data-phase="En espera">
-                        <div id="rma-tickets-block" class="rma-tickets-block" style="display:none;">
-                            <div class="rma-column-header"><span><i class="fas fa-ticket"></i> Tickets</span><span class="rma-column-count" id="rma-count-tickets">0</span></div>
+                        <div id="rma-tickets-block" class="rma-tickets-block rma-collapsible collapsed" style="display:none;">
+                            <div class="rma-column-header" onclick="rmaToggleBlock('tickets')" title="Clic para desplegar / plegar"><span><i class="fas fa-chevron-right rma-collapse-chevron"></i><i class="fas fa-ticket"></i> Tickets</span><span class="rma-column-count" id="rma-count-tickets">0</span></div>
                             <div id="rma-list-tickets"></div>
                         </div>
-                        <div id="rma-transfer-block" class="rma-transfer-block" style="display:none;">
-                            <div class="rma-column-header"><span><i class="fas fa-right-left"></i> Transfer</span><span class="rma-column-count" id="rma-count-transfer">0</span></div>
+                        <div id="rma-transfer-block" class="rma-transfer-block rma-collapsible collapsed" style="display:none;">
+                            <div class="rma-column-header" onclick="rmaToggleBlock('transfer')" title="Clic para desplegar / plegar"><span><i class="fas fa-chevron-right rma-collapse-chevron"></i><i class="fas fa-right-left"></i> Transfer</span><span class="rma-column-count" id="rma-count-transfer">0</span></div>
                             <div id="rma-list-transfer"></div>
                         </div>
                         <div class="rma-column-header"><span>En espera</span><span class="rma-column-count" id="rma-count-espera">0</span></div>
@@ -5823,6 +5830,21 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>`;
     }
 
+    /* Tickets / Transfer: plegados por defecto; el estado se conserva entre renders */
+    const rmaBlockOpen = { tickets: false, transfer: false };
+    function rmaApplyBlockState() {
+        const term = (rmaSearchInput && rmaSearchInput.value || '').trim();
+        [['tickets', 'rma-tickets-block'], ['transfer', 'rma-transfer-block']].forEach(([k, id]) => {
+            const el = document.getElementById(id);
+            /* con el buscador activo se despliegan para ver las coincidencias */
+            if (el) el.classList.toggle('collapsed', !(rmaBlockOpen[k] || term));
+        });
+    }
+    function rmaToggleBlock(k) {
+        rmaBlockOpen[k] = !rmaBlockOpen[k];
+        rmaApplyBlockState();
+    }
+
     function renderRmaTracking() {
         updateRmaTrackingBadge();
         renderDashboard();
@@ -5857,6 +5879,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (rmaTransferBlockEl) rmaTransferBlockEl.style.display = transferItems.length ? '' : 'none';
         if (rmaTransferCountEl) rmaTransferCountEl.textContent = transferItems.length;
         if (rmaTransferListEl) rmaTransferListEl.innerHTML = transferItems.map(rmaCardHtml).join('');
+
+        rmaApplyBlockState();
 
         RMA_PHASES.forEach(phase => {
             let items = rmaTracking.filter(e => e.fase === phase);
