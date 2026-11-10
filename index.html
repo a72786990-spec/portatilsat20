@@ -1063,6 +1063,7 @@
         .dash-title-garantia { color: #6f42c1; }
         .dash-title-ticket  { color: #e83e8c; }
         .dash-title-transfer { color: #17a2b8; }
+        .dash-title-comp { color: #20c997; }
         .dash-notif-section { display: flex; flex-direction: column; gap: 12px; }
         .dash-stat-card {
             background: #f8f9fa; border: 1px solid var(--border-color); border-radius: 8px;
@@ -1423,6 +1424,15 @@
         .rma-transfer-block { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 2px dashed var(--border-color); }
         .rma-transfer-block .rma-column-header { color: #17a2b8; border-color: #17a2b8; }
         .rma-transfer-block .rma-column-count  { background: #17a2b8; }
+        .rma-comp-block { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 2px dashed var(--border-color); }
+        .rma-comp-block .rma-column-header { color: #20c997; border-color: #20c997; }
+        .rma-comp-block .rma-column-count  { background: #20c997; }
+        /* Bloques Tickets / Transfer / Compensación: minimizados por defecto, se abren al pulsar la cabecera */
+        .rma-collapsible .rma-column-header { cursor: pointer; user-select: none; }
+        .rma-collapsible .rma-column-header .rma-block-chevron { font-size: 0.7rem; margin-left: 6px; transition: transform .15s; transform: rotate(90deg); }
+        .rma-collapsible.rma-collapsed .rma-column-header .rma-block-chevron { transform: rotate(0deg); }
+        .rma-collapsible.rma-collapsed > div[id^="rma-list-"] { display: none; }
+        .rma-collapsible.rma-collapsed { padding-bottom: 0; }
         .rma-column[data-phase="Repair"]    .rma-column-header { color: #6f42c1; border-color: #6f42c1; }
         .rma-column[data-phase="Repair"]    .rma-column-count  { background: #6f42c1; }
         .rma-column[data-phase="Final Test"] .rma-column-header { color: var(--success-color); border-color: var(--success-color); }
@@ -1479,6 +1489,8 @@
         .rma-ticket-time { font-family: monospace; font-weight: 700; flex: 1; word-break: break-all; color: #e83e8c; }
         .rma-card-crono.transfer { color: #17a2b8; }
         .rma-transfer-time { font-family: monospace; font-weight: 700; flex: 1; word-break: break-all; color: #17a2b8; }
+        .rma-card-crono.comp { color: #20c997; }
+        .rma-comp-time { font-family: monospace; font-weight: 700; flex: 1; word-break: break-all; color: #20c997; }
         .rma-card-espera { margin-top: 5px; font-size: 0.72rem; font-weight: 700; color: var(--warning-color); word-break: break-word; }
 
         /* Buscador del tablero de Seguimiento RMA */
@@ -1625,6 +1637,8 @@
         #ucs-modal-overlay .modal-box { max-width: 1300px; width: 96%; height: 92vh; max-height: 92vh; }
         #ucs-modal-overlay .modal-body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; flex: 1; }
         #ucs-parts-overlay { z-index: 2100; }
+        /* Modificar RMA finalizado (Contabilidad): debe abrirse por encima del modal de Contabilidad */
+        #rma-beneficio-edit-overlay { z-index: 2300; }
         #ucs-parts-overlay .modal-box { max-width: 900px; }
         .ucs-ov .ucs-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
         .ucs-ov .ucs-file-btn { background: #3498db; color: #fff; padding: 9px 16px; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 0.9rem; transition: opacity 0.2s; }
@@ -1789,7 +1803,7 @@
         .rma-hsubrow:last-child { border-bottom: none; }
         .rma-hsubhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .rma-hdur { font-family: monospace; font-weight: 700; font-size: 0.78rem; color: var(--primary-color); white-space: nowrap; }
-        .rma-hdur.ticket { color: #e83e8c; } .rma-hdur.transfer { color: #17a2b8; } .rma-hdur.espera { color: var(--warning-color); }
+        .rma-hdur.ticket { color: #e83e8c; } .rma-hdur.transfer { color: #17a2b8; } .rma-hdur.comp { color: #20c997; } .rma-hdur.espera { color: var(--warning-color); }
         .rma-hinfo { margin: 4px 0 0 4px; padding-left: 10px; border-left: 3px solid var(--primary-color); font-size: 0.78rem; color: var(--text-color); }
         .rma-hinfo div { padding: 1px 0; } .rma-hinfo small { color: var(--secondary-color); }
         .rma-hbadge-info { color: var(--primary-color); font-size: 0.75rem; white-space: nowrap; }
@@ -2269,7 +2283,7 @@
                     <h3 class="dashboard-title"><i class="fas fa-bell"></i> Notificaciones</h3>
                     <div class="dash-list-empty" id="dash-notif-empty">Cargando…</div>
                     <div class="dash-notif-section" id="dash-notif-2dias" style="display:none;">
-                        <h3 class="dashboard-title dash-title-warning"><i class="fas fa-triangle-exclamation"></i> Más de 2 días en fase (excl. Pendiente Recibir / En espera / Tickets / Transfer)</h3>
+                        <h3 class="dashboard-title dash-title-warning"><i class="fas fa-triangle-exclamation"></i> Más de 2 días en fase (excl. Pendiente Recibir / En espera / Tickets / Transfer / Compensación)</h3>
                         <div class="dash-list" id="dash-list-2dias"></div>
                     </div>
                     <div class="dash-notif-section" id="dash-notif-30dias" style="display:none;">
@@ -2283,6 +2297,10 @@
                     <div class="dash-notif-section" id="dash-notif-transfer" style="display:none;">
                         <h3 class="dashboard-title dash-title-transfer"><i class="fas fa-right-left"></i> Transfer</h3>
                         <div class="dash-list" id="dash-list-transfer"></div>
+                    </div>
+                    <div class="dash-notif-section" id="dash-notif-comp" style="display:none;">
+                        <h3 class="dashboard-title dash-title-comp"><i class="fas fa-scale-balanced"></i> Compensación</h3>
+                        <div class="dash-list" id="dash-list-comp"></div>
                     </div>
                 </div>
                 <div class="dash-col dash-col-list">
@@ -2487,13 +2505,17 @@
                         <div id="rma-list-pretest"></div>
                     </div>
                     <div class="rma-column" data-phase="En espera">
-                        <div id="rma-tickets-block" class="rma-tickets-block" style="display:none;">
-                            <div class="rma-column-header"><span><i class="fas fa-ticket"></i> Tickets</span><span class="rma-column-count" id="rma-count-tickets">0</span></div>
+                        <div id="rma-tickets-block" class="rma-tickets-block rma-collapsible rma-collapsed" style="display:none;">
+                            <div class="rma-column-header" onclick="rmaToggleBlock('tickets')" title="Pulsa para abrir / minimizar"><span><i class="fas fa-ticket"></i> Tickets <i class="fas fa-chevron-down rma-block-chevron"></i></span><span class="rma-column-count" id="rma-count-tickets">0</span></div>
                             <div id="rma-list-tickets"></div>
                         </div>
-                        <div id="rma-transfer-block" class="rma-transfer-block" style="display:none;">
-                            <div class="rma-column-header"><span><i class="fas fa-right-left"></i> Transfer</span><span class="rma-column-count" id="rma-count-transfer">0</span></div>
+                        <div id="rma-transfer-block" class="rma-transfer-block rma-collapsible rma-collapsed" style="display:none;">
+                            <div class="rma-column-header" onclick="rmaToggleBlock('transfer')" title="Pulsa para abrir / minimizar"><span><i class="fas fa-right-left"></i> Transfer <i class="fas fa-chevron-down rma-block-chevron"></i></span><span class="rma-column-count" id="rma-count-transfer">0</span></div>
                             <div id="rma-list-transfer"></div>
+                        </div>
+                        <div id="rma-comp-block" class="rma-comp-block rma-collapsible rma-collapsed" style="display:none;">
+                            <div class="rma-column-header" onclick="rmaToggleBlock('comp')" title="Pulsa para abrir / minimizar"><span><i class="fas fa-scale-balanced"></i> Compensación <i class="fas fa-chevron-down rma-block-chevron"></i></span><span class="rma-column-count" id="rma-count-comp">0</span></div>
+                            <div id="rma-list-comp"></div>
                         </div>
                         <div class="rma-column-header"><span>En espera</span><span class="rma-column-count" id="rma-count-espera">0</span></div>
                         <div id="rma-list-espera"></div>
@@ -2640,6 +2662,12 @@
                     <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
                         <input type="checkbox" id="rma-info-transfer-check" onchange="rmaInfoToggleTransfer()">
                         <span style="font-weight:700; color:#17a2b8;"><i class="fas fa-right-left"></i> Transfer</span>
+                    </label>
+                </div>
+                <div id="rma-info-comp-row" class="rma-info-garantia-row">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                        <input type="checkbox" id="rma-info-comp-check" onchange="rmaInfoToggleComp()">
+                        <span style="font-weight:700; color:#20c997;"><i class="fas fa-scale-balanced"></i> Compensación</span>
                     </label>
                 </div>
                 <div id="rma-info-espera-row" class="rma-info-garantia-row" style="display:none;">
@@ -3148,7 +3176,7 @@
                 <hr style="border:none; border-top:1px solid var(--border-color); margin:22px 0;">
 
                 <h3 class="stats-section-title"><i class="fas fa-stopwatch"></i> Ajustar tiempo de un RMA</h3>
-                <p style="color:var(--secondary-color); font-size:0.85rem; margin-top:0;">Suma o resta tiempo a un RMA (usa números negativos para restar, p. ej. -1 en horas). Elige a qué cronómetro se aplica: <b>Seguimiento</b> (tarjeta, tiempo medio y estadísticas), <b>En espera</b> (listado «Más de 90 días en En espera», solo mientras el RMA está en esa fase), <b>Ticket</b> (solo «Tickets Abiertos», mientras el RMA tiene ticket abierto; no entra en estadísticas) o <b>Transfer</b> (solo «Transfer», mientras el RMA está en Transfer; no entra en estadísticas). El tiempo nunca baja de 0. Los ajustes son acumulativos y se pueden quitar de la lista.</p>
+                <p style="color:var(--secondary-color); font-size:0.85rem; margin-top:0;">Suma o resta tiempo a un RMA (usa números negativos para restar, p. ej. -1 en horas). Elige a qué cronómetro se aplica: <b>Seguimiento</b> (tarjeta, tiempo medio y estadísticas), <b>En espera</b> (listado «Más de 90 días en En espera», solo mientras el RMA está en esa fase), <b>Ticket</b> (solo «Tickets Abiertos», mientras el RMA tiene ticket abierto; no entra en estadísticas), <b>Transfer</b> (solo «Transfer», mientras el RMA está en Transfer; no entra en estadísticas) o <b>Compensación</b> (solo «Compensación», mientras el RMA está en Compensación; no entra en estadísticas). El tiempo nunca baja de 0. Los ajustes son acumulativos y se pueden quitar de la lista.</p>
                 <div class="rma-accounting-fields">
                     <div class="rma-accounting-field">
                         <label for="rma-ajuste-rma">Nº de RMA</label>
@@ -3161,6 +3189,7 @@
                             <option value="espera">En espera</option>
                             <option value="ticket">Ticket</option>
                             <option value="transfer">Transfer</option>
+                            <option value="compensacion">Compensación</option>
                         </select>
                     </div>
                     <div class="rma-accounting-field">
@@ -3276,6 +3305,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const rmaInfoGarantiaFBtn = document.getElementById('rma-info-garantia-f');
     const rmaInfoTicketCheck    = document.getElementById('rma-info-ticket-check');
     const rmaInfoTransferCheck  = document.getElementById('rma-info-transfer-check');
+    const rmaInfoCompCheck      = document.getElementById('rma-info-comp-check');
     const rmaTicketPhaseHeadingEl = document.getElementById('rma-ticket-phase-heading');
     const rmaTicketPhaseModalOverlay = document.getElementById('rma-ticket-phase-modal-overlay');
     const rmaTicketPhaseCloseBtn     = document.getElementById('rma-ticket-phase-close-btn');
@@ -3365,6 +3395,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const dashList30diasEl    = document.getElementById('dash-list-30dias');
     const dashListTicketsEl   = document.getElementById('dash-list-tickets');
     const dashListTransferEl  = document.getElementById('dash-list-transfer');
+    const dashListCompEl      = document.getElementById('dash-list-comp');
     const dashPieEl           = document.getElementById('dash-pie');
     const dashPieTotalEl      = document.getElementById('dash-pie-total');
     const dashPieLegendEl     = document.getElementById('dash-pie-legend');
@@ -3438,6 +3469,9 @@ document.addEventListener('DOMContentLoaded', () => {
        de seguimiento pausado) pero con su propio cronómetro, que solo cuenta el tiempo que el RMA
        está en esta fase. Se activa/desactiva con el check "Transfer" en la Info del RMA. */
     const RMA_TRANSFER_PHASE = 'Transfer';
+    /* Fase especial "Compensación": igual que Tickets y Transfer (comparte columna con "En espera",
+       cronómetro propio informativo). Se activa/desactiva con el check "Compensación" en la Info del RMA. */
+    const RMA_COMP_PHASE = 'Compensación';
     /* Fases en las que se puede marcar "En espera de…" (motivo + cronómetro pausado) */
     const RMA_ESPERA_PHASES = ['Pretest', 'Final Test'];
     let rmaHistorial = [];       // array of { id, rma, fase, usuario, fecha } — historial completo de movimientos
@@ -4851,7 +4885,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function migrateRma(entry) {
         if (!entry.id) entry.id = genId('rma');
-        if (!RMA_PHASES.includes(entry.fase) && entry.fase !== RMA_TICKET_PHASE && entry.fase !== RMA_TRANSFER_PHASE) entry.fase = 'Pretest';
+        if (!RMA_PHASES.includes(entry.fase) && entry.fase !== RMA_TICKET_PHASE && entry.fase !== RMA_TRANSFER_PHASE && entry.fase !== RMA_COMP_PHASE) entry.fase = 'Pretest';
         if (!entry.fecha) entry.fecha = nowStr();
         if (!entry.usuario) entry.usuario = '';
         if (entry.garantia !== 'G' && entry.garantia !== 'F') entry.garantia = null;
@@ -4866,7 +4900,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!entry.cronometro || typeof entry.cronometro !== 'object') {
             /* RMAs ya existentes que no tenían cronómetro: se crea arrancado desde ahora
                (pausado si ya está "En espera" o todavía "Pendiente Recibir") */
-            const startsRunning = entry.fase !== 'En espera' && entry.fase !== 'Pendiente Recibir' && entry.fase !== RMA_TICKET_PHASE && entry.fase !== RMA_TRANSFER_PHASE;
+            const startsRunning = entry.fase !== 'En espera' && entry.fase !== 'Pendiente Recibir' && entry.fase !== RMA_TICKET_PHASE && entry.fase !== RMA_TRANSFER_PHASE && entry.fase !== RMA_COMP_PHASE;
             entry.cronometro = { running: startsRunning, accumulatedMs: 0, startedAt: startsRunning ? Date.now() : null };
         } else {
             if (typeof entry.cronometro.accumulatedMs !== 'number') entry.cronometro.accumulatedMs = 0;
@@ -4874,7 +4908,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (entry.cronometro.running && typeof entry.cronometro.startedAt !== 'number') entry.cronometro.startedAt = Date.now();
             if (!entry.cronometro.running) entry.cronometro.startedAt = null;
             /* Consistencia de fase: en "En espera" y en "Pendiente Recibir" el cronómetro siempre debe estar pausado */
-            if ((entry.fase === 'En espera' || entry.fase === 'Pendiente Recibir' || entry.fase === RMA_TICKET_PHASE || entry.fase === RMA_TRANSFER_PHASE) && entry.cronometro.running) {
+            if ((entry.fase === 'En espera' || entry.fase === 'Pendiente Recibir' || entry.fase === RMA_TICKET_PHASE || entry.fase === RMA_TRANSFER_PHASE || entry.fase === RMA_COMP_PHASE) && entry.cronometro.running) {
                 entry.cronometro.accumulatedMs += (Date.now() - entry.cronometro.startedAt);
                 entry.cronometro.running = false;
                 entry.cronometro.startedAt = null;
@@ -4897,6 +4931,15 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } else {
             entry.transferStartedAt = null;
+        }
+        /* Cronómetro "Compensación": mide cuánto tiempo lleva el RMA en la fase Compensación.
+           Independiente del resto de cronómetros y NO se usa en ninguna estadística. */
+        if (entry.fase === RMA_COMP_PHASE) {
+            if (typeof entry.compStartedAt !== 'number' || !isFinite(entry.compStartedAt)) {
+                entry.compStartedAt = fechaTs(entry.fecha) || Date.now();
+            }
+        } else {
+            entry.compStartedAt = null;
         }
         /* Cronómetro "Espera": mide cuánto lleva el RMA en la fase En espera (es el que se usa en
            "Más de 90 días en En espera"). Independiente del cronómetro de seguimiento y del de Ticket. */
@@ -5347,11 +5390,32 @@ document.addEventListener('DOMContentLoaded', () => {
         openRmaTicketPhaseModal(id);
     };
 
+    /* Check "Compensación" (cualquier fase): mismo funcionamiento que "Ticket" y "Transfer", con la
+       fase especial "Compensación". Al desmarcarlo hay que elegir a qué fase se mueve. */
+    window.rmaInfoToggleComp = async function() {
+        if (!rmaInfoCurrentId) return;
+        const idx = rmaFindIndex(rmaInfoCurrentId);
+        if (idx === -1) return;
+        const entry = rmaTracking[idx];
+        const id = entry.id;
+
+        if (entry.fase !== RMA_COMP_PHASE) {
+            await window.rmaMovePhase(id, RMA_COMP_PHASE);
+            if (rmaInfoCurrentId === id) renderRmaInfo();
+            return;
+        }
+
+        renderRmaInfo();
+        openRmaTicketPhaseModal(id);
+    };
+
     function openRmaTicketPhaseModal(id) {
         const entry = rmaTracking.find(e => e.id === id);
         if (!entry) return;
         if (rmaTicketPhaseHeadingEl) {
-            rmaTicketPhaseHeadingEl.innerHTML = entry.fase === RMA_TRANSFER_PHASE
+            rmaTicketPhaseHeadingEl.innerHTML = entry.fase === RMA_COMP_PHASE
+                ? '<i class="fas fa-scale-balanced"></i> Mover RMA fuera de Compensación'
+                : entry.fase === RMA_TRANSFER_PHASE
                 ? '<i class="fas fa-right-left"></i> Mover RMA fuera de Transfer'
                 : '<i class="fas fa-ticket"></i> Mover RMA fuera de Tickets';
         }
@@ -5479,6 +5543,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let prevDuracionMs = null;
         if (oldPhase === RMA_TICKET_PHASE) prevDuracionMs = rmaTicketElapsedMs(rmaTracking[idx]);
         else if (oldPhase === RMA_TRANSFER_PHASE) prevDuracionMs = rmaTransferElapsedMs(rmaTracking[idx]);
+        else if (oldPhase === RMA_COMP_PHASE) prevDuracionMs = rmaCompElapsedMs(rmaTracking[idx]);
         else if (oldPhase === 'En espera') prevDuracionMs = rmaEsperaElapsedMs(rmaTracking[idx]);
         const infoPrev = rmaInfoSnapshot(rmaTracking[idx]);
         const esperaDeSnap = rmaTracking[idx].esperaMotivo
@@ -5539,6 +5604,19 @@ document.addEventListener('DOMContentLoaded', () => {
             rmaTracking[idx].transferStartedAt = null;
         }
 
+        /* Cronómetro "Compensación": arranca al entrar en la fase Compensación y se detiene al salir
+           (queda registrado en Info). Solo cuenta el tiempo que el RMA está en Compensación. */
+        if (newPhase === RMA_COMP_PHASE && oldPhase !== RMA_COMP_PHASE) {
+            rmaTracking[idx].compStartedAt = Date.now();
+        } else if (oldPhase === RMA_COMP_PHASE && newPhase !== RMA_COMP_PHASE) {
+            const cpStart = rmaTracking[idx].compStartedAt;
+            if (typeof cpStart === 'number') {
+                if (!Array.isArray(rmaTracking[idx].info)) rmaTracking[idx].info = [];
+                rmaTracking[idx].info.push({ id: genId('rmainfo'), fecha: todayISO(), texto: `Compensación finalizada tras ${rmaCronoFormat(Date.now() - cpStart)} en fase Compensación.`, usuario: currentUserEmail });
+            }
+            rmaTracking[idx].compStartedAt = null;
+        }
+
         /* Cronómetro "Espera": arranca al entrar en la fase En espera y se detiene al salir.
            Solo sirve para el listado de +90 días; no entra en ninguna estadística. */
         if (newPhase === 'En espera' && oldPhase !== 'En espera') {
@@ -5551,7 +5629,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const entry = rmaTracking[idx];
         if (!entry.cronometro) entry.cronometro = { running: false, accumulatedMs: 0, startedAt: null };
         const c = entry.cronometro;
-        if (newPhase === 'En espera' || newPhase === 'Pendiente Recibir' || newPhase === RMA_TICKET_PHASE || newPhase === RMA_TRANSFER_PHASE) {
+        if (newPhase === 'En espera' || newPhase === 'Pendiente Recibir' || newPhase === RMA_TICKET_PHASE || newPhase === RMA_TRANSFER_PHASE || newPhase === RMA_COMP_PHASE) {
             if (c.running) {
                 c.accumulatedMs = rmaCronoRawMs(entry);
                 c.running = false;
@@ -5699,6 +5777,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return Math.max(0, Date.now() - entry.transferStartedAt + rmaAjusteMs(entry.rma, 'transfer'));
     }
 
+    /* Tiempo transcurrido en la fase Compensación (solo informativo; no entra en estadísticas) */
+    function rmaCompElapsedMs(entry) {
+        if (entry.fase !== RMA_COMP_PHASE || typeof entry.compStartedAt !== 'number') return 0;
+        return Math.max(0, Date.now() - entry.compStartedAt + rmaAjusteMs(entry.rma, 'compensacion'));
+    }
+
     /* Tiempo del cronómetro "Espera" (solo RMAs en la fase En espera) + ajuste manual de Contabilidad.
        Solo informativo: alimenta "Más de 90 días en En espera"; no entra en estadísticas. */
     function rmaEsperaElapsedMs(entry) {
@@ -5742,6 +5826,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!entry) return;
             el.textContent = rmaCronoFormat(rmaTransferElapsedMs(entry));
         });
+        document.querySelectorAll('.dash-comp-time[data-id], .rma-comp-time[data-id]').forEach(el => {
+            const entry = rmaTracking.find(e => e.id === el.dataset.id);
+            if (!entry) return;
+            el.textContent = rmaCronoFormat(rmaCompElapsedMs(entry));
+        });
         document.querySelectorAll('.rma-ticket-time[data-id]').forEach(el => {
             const entry = rmaTracking.find(e => e.id === el.dataset.id);
             if (!entry) return;
@@ -5765,7 +5854,7 @@ document.addEventListener('DOMContentLoaded', () => {
                        <button class="rma-move-btn to-espera" onclick="rmaMovePhase('${entry.id}','En espera')">→ En espera</button>`;
         } else if (entry.fase === 'Final Test') {
             actions = `<button class="rma-move-btn to-espera" onclick="rmaMovePhase('${entry.id}','En espera')">→ En espera</button>`;
-        } else if (entry.fase === RMA_TICKET_PHASE || entry.fase === RMA_TRANSFER_PHASE) {
+        } else if (entry.fase === RMA_TICKET_PHASE || entry.fase === RMA_TRANSFER_PHASE || entry.fase === RMA_COMP_PHASE) {
             actions = '';
         }
         let delBtn = '';
@@ -5779,7 +5868,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 <i class="fas fa-circle-info"></i> Info${infoCount ? `<span class="rma-info-count">${infoCount}</span>` : ''}
             </button>`;
         const isRunning = !!(entry.cronometro && entry.cronometro.running);
-        const cronoHtml = entry.fase === RMA_TRANSFER_PHASE
+        const cronoHtml = entry.fase === RMA_COMP_PHASE
+            ? `
+            <div class="rma-card-crono comp" title="Tiempo en fase Compensación (no cuenta en estadísticas)">
+                <i class="fas fa-scale-balanced"></i>
+                <span class="rma-comp-time" data-id="${entry.id}">${esc(rmaCronoFormat(rmaCompElapsedMs(entry)))}</span>
+            </div>`
+            : entry.fase === RMA_TRANSFER_PHASE
             ? `
             <div class="rma-card-crono transfer" title="Tiempo en fase Transfer (no cuenta en estadísticas)">
                 <i class="fas fa-right-left"></i>
@@ -5823,6 +5918,15 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>`;
     }
 
+    /* Estado abierto/minimizado de los bloques Tickets / Transfer / Compensación (por defecto minimizados) */
+    const rmaBlockOpen = { tickets: false, transfer: false, comp: false };
+    let rmaSearchChanged = false;
+    window.rmaToggleBlock = function(key) {
+        rmaBlockOpen[key] = !rmaBlockOpen[key];
+        const el = document.getElementById('rma-' + key + '-block');
+        if (el) el.classList.toggle('rma-collapsed', !rmaBlockOpen[key]);
+    };
+
     function renderRmaTracking() {
         updateRmaTrackingBadge();
         renderDashboard();
@@ -5835,28 +5939,31 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         const term = (rmaSearchInput && rmaSearchInput.value || '').trim().toLowerCase();
 
-        /* Bloque "Tickets": comparte columna con "En espera", va en la parte superior,
-           y solo se muestra si hay algún RMA marcado como Ticket. */
-        const rmaTicketsBlockEl = document.getElementById('rma-tickets-block');
-        const rmaTicketsListEl  = document.getElementById('rma-list-tickets');
-        const rmaTicketsCountEl = document.getElementById('rma-count-tickets');
-        let ticketItems = rmaTracking.filter(e => e.fase === RMA_TICKET_PHASE);
-        if (term) ticketItems = ticketItems.filter(e => String(e.rma).toLowerCase().includes(term));
-        ticketItems = ticketItems.sort((a, b) => (fechaTs(b.fecha) - fechaTs(a.fecha)));
-        if (rmaTicketsBlockEl) rmaTicketsBlockEl.style.display = ticketItems.length ? '' : 'none';
-        if (rmaTicketsCountEl) rmaTicketsCountEl.textContent = ticketItems.length;
-        if (rmaTicketsListEl) rmaTicketsListEl.innerHTML = ticketItems.map(rmaCardHtml).join('');
-
-        /* Bloque "Transfer": igual que Tickets, en la columna "En espera", solo si hay algún RMA en Transfer. */
-        const rmaTransferBlockEl = document.getElementById('rma-transfer-block');
-        const rmaTransferListEl  = document.getElementById('rma-list-transfer');
-        const rmaTransferCountEl = document.getElementById('rma-count-transfer');
-        let transferItems = rmaTracking.filter(e => e.fase === RMA_TRANSFER_PHASE);
-        if (term) transferItems = transferItems.filter(e => String(e.rma).toLowerCase().includes(term));
-        transferItems = transferItems.sort((a, b) => (fechaTs(b.fecha) - fechaTs(a.fecha)));
-        if (rmaTransferBlockEl) rmaTransferBlockEl.style.display = transferItems.length ? '' : 'none';
-        if (rmaTransferCountEl) rmaTransferCountEl.textContent = transferItems.length;
-        if (rmaTransferListEl) rmaTransferListEl.innerHTML = transferItems.map(rmaCardHtml).join('');
+        /* Bloques "Tickets", "Transfer" y "Compensación": comparten columna con "En espera", van en la
+           parte superior y solo se muestran si hay algún RMA en esa fase. Aparecen MINIMIZADOS (solo
+           cabecera con el número de casos); al pulsar la cabecera se abren y al pulsar otra vez se
+           minimizan. Si la búsqueda coincide con algún RMA del bloque, se abre automáticamente. */
+        const searchChanged = rmaSearchChanged;
+        rmaSearchChanged = false;
+        [
+            { key: 'tickets',  phase: RMA_TICKET_PHASE,   blockId: 'rma-tickets-block',  listId: 'rma-list-tickets',  countId: 'rma-count-tickets' },
+            { key: 'transfer', phase: RMA_TRANSFER_PHASE, blockId: 'rma-transfer-block', listId: 'rma-list-transfer', countId: 'rma-count-transfer' },
+            { key: 'comp',     phase: RMA_COMP_PHASE,     blockId: 'rma-comp-block',     listId: 'rma-list-comp',     countId: 'rma-count-comp' }
+        ].forEach(b => {
+            const blockEl = document.getElementById(b.blockId);
+            const listEl  = document.getElementById(b.listId);
+            const countEl = document.getElementById(b.countId);
+            let items = rmaTracking.filter(e => e.fase === b.phase);
+            if (term) items = items.filter(e => String(e.rma).toLowerCase().includes(term));
+            items = items.sort((a, c) => (fechaTs(c.fecha) - fechaTs(a.fecha)));
+            if (term && searchChanged && items.length) rmaBlockOpen[b.key] = true;
+            if (blockEl) {
+                blockEl.style.display = items.length ? '' : 'none';
+                blockEl.classList.toggle('rma-collapsed', !rmaBlockOpen[b.key]);
+            }
+            if (countEl) countEl.textContent = items.length;
+            if (listEl) listEl.innerHTML = items.map(rmaCardHtml).join('');
+        });
 
         RMA_PHASES.forEach(phase => {
             let items = rmaTracking.filter(e => e.fase === phase);
@@ -5894,7 +6001,7 @@ document.addEventListener('DOMContentLoaded', () => {
     rmaCloseBtn.addEventListener('click', closeRmaTrackingModal);
     rmaModalOverlay.addEventListener('click', (e) => { if (e.target === rmaModalOverlay) closeRmaTrackingModal(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && rmaModalOverlay.classList.contains('show')) closeRmaTrackingModal(); });
-    rmaSearchInput.addEventListener('input', renderRmaTracking);
+    rmaSearchInput.addEventListener('input', () => { rmaSearchChanged = true; renderRmaTracking(); });
 
     /* ════════════════════════════════════════
        INFO DE RMA (añadir / modificar / borrar / ver)
@@ -5920,6 +6027,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (rmaInfoTicketCheck) rmaInfoTicketCheck.checked = (entry.fase === RMA_TICKET_PHASE);
         if (rmaInfoTransferCheck) rmaInfoTransferCheck.checked = (entry.fase === RMA_TRANSFER_PHASE);
+        if (rmaInfoCompCheck) rmaInfoCompCheck.checked = (entry.fase === RMA_COMP_PHASE);
 
         /* El check "En espera de…" solo se muestra mientras el RMA está en Pretest o Final Test */
         if (RMA_ESPERA_PHASES.includes(entry.fase)) {
@@ -6127,11 +6235,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const next = g.fases[idxF + 1];
                 /* Duración en fases especiales: la guarda el movimiento siguiente */
                 let durHtml = '';
-                const cls = h.fase === RMA_TICKET_PHASE ? 'ticket' : h.fase === RMA_TRANSFER_PHASE ? 'transfer' : h.fase === 'En espera' ? 'espera' : '';
+                const cls = h.fase === RMA_TICKET_PHASE ? 'ticket' : h.fase === RMA_TRANSFER_PHASE ? 'transfer' : h.fase === RMA_COMP_PHASE ? 'comp' : h.fase === 'En espera' ? 'espera' : '';
                 if (cls) {
                     if (next && typeof next.prevDuracionMs === 'number') durHtml = `<span class="rma-hdur ${cls}" title="Duración en ${esc(h.fase)}">${fmt(next.prevDuracionMs)}</span>`;
                     else if (!next && liveEntry && liveEntry.fase === h.fase) {
-                        const ms = h.fase === RMA_TICKET_PHASE ? rmaTicketElapsedMs(liveEntry) : h.fase === RMA_TRANSFER_PHASE ? rmaTransferElapsedMs(liveEntry) : rmaEsperaElapsedMs(liveEntry);
+                        const ms = h.fase === RMA_TICKET_PHASE ? rmaTicketElapsedMs(liveEntry) : h.fase === RMA_TRANSFER_PHASE ? rmaTransferElapsedMs(liveEntry) : h.fase === RMA_COMP_PHASE ? rmaCompElapsedMs(liveEntry) : rmaEsperaElapsedMs(liveEntry);
                         durHtml = `<span class="rma-hdur ${cls}">en curso · ${fmt(ms)}</span>`;
                     }
                 }
@@ -6566,7 +6674,8 @@ document.addEventListener('DOMContentLoaded', () => {
         'Repair': '#6f42c1',
         'Final Test': '#28a745',
         'Tickets': '#e83e8c',
-        'Transfer': '#17a2b8'
+        'Transfer': '#17a2b8',
+        'Compensación': '#20c997'
     };
 
     /* Fases que cuentan como "en reparación" en tiempo real */
@@ -6574,7 +6683,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderDashboardPie() {
         if (!dashPieEl) return;
-        const counts = RMA_PHASES.concat(RMA_TICKET_PHASE, RMA_TRANSFER_PHASE).map(phase => ({
+        const counts = RMA_PHASES.concat(RMA_TICKET_PHASE, RMA_TRANSFER_PHASE, RMA_COMP_PHASE).map(phase => ({
             phase,
             count: rmaTracking.filter(e => e.fase === phase).length,
             color: RMA_PHASE_COLORS[phase] || '#999'
@@ -6668,7 +6777,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         /* ── Listado: más de 2 días en cualquier fase (excepto Pendiente Recibir / En espera) ── */
         const list2dias = rmaTracking
-            .filter(e => e.fase !== 'Pendiente Recibir' && e.fase !== 'En espera' && e.fase !== RMA_TICKET_PHASE && e.fase !== RMA_TRANSFER_PHASE)
+            .filter(e => e.fase !== 'Pendiente Recibir' && e.fase !== 'En espera' && e.fase !== RMA_TICKET_PHASE && e.fase !== RMA_TRANSFER_PHASE && e.fase !== RMA_COMP_PHASE)
             .map(e => {
                 const d = parseFechaHora(e.fecha);
                 const dias = d ? Math.max(0, now - d.getTime()) / 86400000 : 0;
@@ -6712,12 +6821,23 @@ document.addEventListener('DOMContentLoaded', () => {
             ? listTransfer.map(e => `<div class="dash-list-item"><span class="dash-item-rma">${esc(e.rma)}</span><span class="dash-item-dias dash-transfer-time" data-id="${e.id}">${esc(rmaCronoFormat(e.ms))}</span></div>`).join('')
             : '';
 
+        /* ── Listado: Compensación (RMAs marcados con el check "Compensación" en su Info) ── */
+        const listComp = rmaTracking
+            .filter(e => e.fase === RMA_COMP_PHASE)
+            .map(e => ({ id: e.id, rma: e.rma, ms: rmaCompElapsedMs(e) }))
+            .sort((a, b) => b.ms - a.ms);
+
+        dashListCompEl.innerHTML = listComp.length
+            ? listComp.map(e => `<div class="dash-list-item"><span class="dash-item-rma">${esc(e.rma)}</span><span class="dash-item-dias dash-comp-time" data-id="${e.id}">${esc(rmaCronoFormat(e.ms))}</span></div>`).join('')
+            : '';
+
         /* ── Columna "Notificaciones": solo se muestran los apartados que tienen algo que avisar ── */
         const notifSections = [
             ['dash-notif-2dias',     list2dias.length],
             ['dash-notif-30dias',    list30dias.length],
             ['dash-notif-tickets',   listTickets.length],
-            ['dash-notif-transfer',  listTransfer.length]
+            ['dash-notif-transfer',  listTransfer.length],
+            ['dash-notif-comp',      listComp.length]
         ];
         let notifTotal = 0;
         notifSections.forEach(([id, n]) => {
@@ -6965,7 +7085,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function rmaKeyOf(r) { return String(r ?? '').trim().toLowerCase(); }
 
     /* crono: 'seguimiento' | 'espera' | 'ticket'. Los ajustes antiguos (sin crono indicado) eran de espera. */
-    const RMA_AJUSTE_CRONOS = { seguimiento: 'Seguimiento', espera: 'En espera', ticket: 'Ticket', transfer: 'Transfer' };
+    const RMA_AJUSTE_CRONOS = { seguimiento: 'Seguimiento', espera: 'En espera', ticket: 'Ticket', transfer: 'Transfer', compensacion: 'Compensación' };
     function rmaAjusteCronoOf(a) { return (a && RMA_AJUSTE_CRONOS[a.crono]) ? a.crono : 'espera'; }
 
     function rmaAjusteMs(rma, crono) {
@@ -7453,6 +7573,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (live.fase === 'En espera') tiempos += ` · En espera: ${fmt(rmaEsperaElapsedMs(live))}`;
             if (live.fase === RMA_TICKET_PHASE) tiempos += ` · Ticket: ${fmt(rmaTicketElapsedMs(live))}`;
             if (live.fase === RMA_TRANSFER_PHASE) tiempos += ` · Transfer: ${fmt(rmaTransferElapsedMs(live))}`;
+            if (live.fase === RMA_COMP_PHASE) tiempos += ` · Compensación: ${fmt(rmaCompElapsedMs(live))}`;
             html = `<b>RMA ${esc(live.rma)}</b> · Fase: ${esc(live.fase)} · ${tiempos}${ajTxt}`;
         } else {
             const moves = rmaHistorial.filter(h => !h.evento && rmaKeyOf(h.rma) === key);
@@ -9009,7 +9130,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const PHASE_COLORS = {
         'Pendiente Recibir': '#8a6d3b', 'Pretest': '#6c757d', 'En espera': '#fd7e14',
-        'Repair': '#6f42c1', 'Final Test': '#28a745', 'Tickets': '#e83e8c', 'Transfer': '#17a2b8'
+        'Repair': '#6f42c1', 'Final Test': '#28a745', 'Tickets': '#e83e8c', 'Transfer': '#17a2b8', 'Compensación': '#20c997'
     };
     const rmaKey = (r) => String(r ?? '').trim().toLowerCase();
 
